@@ -2,6 +2,7 @@
   "name": "openbridge",
   "version": "1.0.0",
   "description": "Import Gantt project plans into OpenProject",
+  "author": "openbridge contributors",
   "main": "src/main.js",
   "scripts": {
     "dev": "electron .",
@@ -12,8 +13,17 @@
   "build": {
     "appId": "com.openbridge.app",
     "productName": "openbridge",
+    "directories": {
+      "output": "release"
+    },
+    "artifactName": "${productName} Setup ${version}.${ext}",
     "win": {
-      "target": "nsis"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
     },
     "mac": {
       "target": "dmg"

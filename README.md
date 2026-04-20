@@ -1,143 +1,109 @@
-# 🌉 openbridge
+# openbridge
 
-> Import Gantt project plans from **`.xlsx`**, **`.xls`**, and **`.csv`** into OpenProject — with preview, validation and one click.
+Import von Projektplänen aus **`.xlsx`**, **`.xls`** und **`.csv`** nach **OpenProject** — mit Spalten-Mapping, Validierung, Dry-Run und Mehrpass-Import (Eltern/Kinder, Updates).
 
 ## Features
 
-- 📂 Import `.xlsx`, `.xls`, and `.csv`
-- 🔍 Dry-Run: preview what would be imported before anything is sent
-- 🗂️ Column mapping UI for manual field mapping during import
-- 🌳 Automatic parent/child hierarchy handling (multi-pass import)
-- ✅ Validation before import (missing required fields, date conflicts, duration logic)
-- 🔄 Create new work packages **or** update existing ones
-- 🖥️ Electron desktop app — double-click and go, no setup needed
+- Import **`.xlsx`**, **`.xls`**, **`.csv`**
+- **Dry-Run:** Vorschau, bevor etwas an die API geht
+- **Spalten-Mapping** im Assistenten (pro Datei; keine gespeicherten Profil-Dateien in der App)
+- **Hierarchie:** mehrstufiger Import (oberste Pakete → Kinder mit aufgelösten Parent-IDs)
+- **Validierung** (Pflichtfelder, Datumslogik, Parent-Hinweise)
+- **Neu anlegen oder aktualisieren** (`openproject_id` gesetzt → Update-Pass)
+- Nach **erfolgreichem echtem Import:** **CSV-Export** der verarbeiteten Arbeitspakete (Semikolon, UTF-8 mit BOM), Spalten u. a. `openproject_id`, `parent_openproject_id`, `predecessor_openproject_ids` — **ohne** `local_id`
+- **Einstellungen:** OpenProject-URL, API-Key, Projektliste; **App-Version** (z. B. **1.0.0** aus `package.json`)
+- **Desktop:** Electron-App; **Windows:** NSIS-Installer aus `npm run build` (siehe unten)
 
 ## Stack
 
-- **Backend:** Node.js (≥ 18 recommended; matches current Electron toolchain)
+- **Runtime:** Node.js (≥ 18 empfohlen; orientiert am Electron-Toolchain)
 - **UI:** Electron + HTML/CSS/JS
-- **Excel parsing:** `xlsx`
-- **API:** OpenProject REST API
+- **Tabellen:** `xlsx` (Excel), `csv-parse` (CSV)
+- **API:** OpenProject REST API v3 (`axios`)
 
-## Project Structure
+## Projektstruktur (Auszug)
 
 ```
 openbridge/
 ├── src/
-│   ├── adapters/          # Input format adapters (Excel, CSV, MSProject, ...)
-│   │   ├── ExcelAdapter.js
-│   │   ├── CsvAdapter.js
-│   │   └── BaseAdapter.js
-│   ├── core/              # Core logic
-│   │   ├── Importer.js    # Orchestrates import passes
-│   │   ├── Mapper.js      # Maps internal model to OpenProject API
-│   │   ├── Validator.js   # Validates work packages before import
-│   │   └── IdRegistry.js  # Tracks local_id → openproject_id
-│   ├── api/               # OpenProject API client
-│   │   └── OpenProjectClient.js
-│   ├── ui/                # Electron frontend
-│   │   ├── index.html
-│   │   ├── app.js
-│   │   └── style.css
-│   └── main.js            # Electron entry point
-├── profiles/              # Saved column mapping profiles
+│   ├── adapters/          # ExcelAdapter, CsvAdapter, BaseAdapter
+│   ├── core/              # Importer, Validator, IdRegistry
+│   ├── api/               # OpenProjectClient
+│   ├── ui/                # Renderer (index.html, app.js, style.css, preload.js)
+│   └── main.js            # Electron Main-Prozess
 ├── .env.example
 ├── package.json
 └── README.md
 ```
 
-## Internal Data Model
+## Datenmodell (vereinfacht)
 
-All adapters convert their input into a unified intermediate format:
+Adapter liefern u. a. `local_id`, `parent_local_id`, `parent_openproject_id`, `openproject_id`, `title`, `type`, Daten, `predecessors` (intern). Der Export nach Import enthält nur noch **OpenProject-IDs** (siehe CSV-Export oben).
 
-```json
-{
-  "local_id": "WF-01",
-  "parent_local_id": null,
-  "openproject_id": null,
-  "title": "Phase 1 - Rohbau",
-  "type": "Phase",
-  "status": "Offen",
-  "start_date": "2026-09-11",
-  "end_date": "2026-10-08",
-  "duration": null,
-  "description": "",
-  "assignee": null,
-  "predecessors": []
-}
-```
-
-> `duration` is only set when **no start/end date** is present. OpenProject derives duration from start+end automatically.
-
-## Import Flow
+## Ablauf in der App
 
 ```
-1. Load file
-2. Detect / select adapter
-3. Map columns (manual or saved profile)
-4. Validate (required fields, date logic, parent refs)
-5. Dry-Run preview
-6. User confirms
-7. Pass 1: Create top-level work packages (no parent)
-8. Pass 2: Create children (with real OpenProject parent IDs)
-9. Pass 3 (optional): Patch dates / extra fields
-10. Show import log
+1. Datei wählen
+2. Spalten zuordnen
+3. Validieren (Dry-Run) → Vorschau
+4. Import ausführen
+5. Optional: CSV der importierten Pakete exportieren / Log exportieren
+6. Einstellungen (Zahnrad)
 ```
 
-## Setup (Development)
+## Entwicklung
 
 ```bash
 npm install
 npm run dev
 ```
 
-## Build Electron App
+## Windows-Build (NSIS)
 
 ```bash
 npm run build
-# → dist/openbridge-setup.exe
 ```
 
-**Build environment:** `electron-builder` runs `npm list` internally to collect production dependencies. That step needs a working **`npm` on your PATH** (a normal Node.js install is enough). In minimal setups (e.g. editor-bundled or portable Node **without** npm), the build can fail during that phase — that is an environment issue, not an application bug.
+**Ergebnis (Standardkonfiguration):**
 
-## Configuration
+| Artefakt | Pfad |
+|----------|------|
+| **Installer (NSIS, x64)** | `release/openbridge Setup 1.0.0.exe` (Version aus `package.json`) |
+| **Entpackte App (Test ohne Installer)** | `release/win-unpacked/openbridge.exe` |
+| **Blockmap** (Update-Mechanik; ohne eigenen Auto-Updater oft unnötig) | `release/openbridge Setup 1.0.0.exe.blockmap` |
 
-OpenProject URL and API key are stored in the app via **Settings** (gear icon in the header). They are persisted to `settings.json` under the Electron user data directory.
+Es wird **keine** zusätzliche portable `.exe` erzeugt — nur NSIS-Installer und `win-unpacked`.
 
-For local development you can still use a `.env` file if you wire it elsewhere, but the packaged UI flow expects the in-app settings.
+**Build-Umgebung:** `electron-builder` nutzt intern u. a. `npm list`. Dafür muss **`npm` auf dem PATH** liegen (normale Node-Installation).
 
-A **`.env.example`** file is included as a reference for optional variables; it is **not required** for normal operation.
+**Hinweise:**
 
-## Security / Abhängigkeiten
+- Wenn der Build mit *„Datei wird von einem anderen Prozess verwendet“* (`app.asar`) fehlschlägt: laufende **openbridge**-Instanz beenden, ggf. Explorer/Virenscanner vom Ordner `release/` bzw. früher `dist/` fernhalten, Ordner manuell löschen und erneut bauen.
+- **Code Signing:** Im Repository ist **kein** Signaturzertifikat konfiguriert. Lokal kann Windows trotzdem `signtool` anzeigen; in **GitHub Actions** ist `CSC_IDENTITY_AUTO_DISCOVERY=false` gesetzt (Workflow `.github/workflows/release.yml`). Für ausgelieferte Builds: Zertifikat + Signing separat planen.
 
-**Electron & Build-Toolchain:** The stack is pinned to **`electron@41.2.1`** and **`electron-builder@26.8.1`**. That upgrade is **done** (not planned). It also pulls in current transitive tooling (including **`tar` / `node-tar`** used by the packaging pipeline), which addresses typical **`npm audit`** findings tied to older electron-builder / tar versions.
+## Konfiguration
 
-**Renderer hardening:** The UI runs with **`contextIsolation: true`**, **`nodeIntegration: false`**, and a narrow **`contextBridge`** surface in `preload.js` (no broad exposure of Node or Electron APIs to the page).
+URL und API-Key werden in der App unter **Einstellungen** gespeichert (`settings.json` im Electron-`userData`-Ordner). `.env` / `.env.example` sind optional und nicht für den normalen UI-Flow nötig.
 
-**`xlsx` (SheetJS):** `npm audit` may still report **Prototype Pollution** and **ReDoS** for the public `xlsx` package; there is often **no regular npm advisory fix** for the community edition. That remains a **known residual risk** while SheetJS stays in the dependency tree. Longer-term mitigations could include another parser or a reduced import path (e.g. CSV-only).
+## Sicherheit / Abhängigkeiten
 
-openbridge is used as an **internal tool** that imports **trusted files only**, which lowers practical exposure compared with a wide consumer deployment.
+- **Electron `41.2.1`**, **electron-builder `26.8.1`** (siehe `package.json`).
+- **Renderer:** `contextIsolation: true`, `nodeIntegration: false`, schmale Bridge in `preload.js`.
+- **`xlsx` (SheetJS):** `npm audit` kann **Prototype Pollution** / **ReDoS** melden; für das Community-Paket fehlt oft ein regulärer Fix — **bekanntes Restrisiko**. openbridge ist als **internes Tool** für **vertrauenswürdige Dateien** gedacht.
 
-Relevant links:
+Links u. a.:
 
-- [GHSA-4r6h-8v6p-xvw6 – Prototype Pollution in SheetJS Community Edition](https://github.com/advisories/GHSA-4r6h-8v6p-xvw6)
-- [GHSA-5pgg-2g8v-p4x9 – SheetJS Regular Expression Denial of Service (ReDoS)](https://github.com/advisories/GHSA-5pgg-2g8v-p4x9)
-- [Electron – Security & Best Practices](https://www.electronjs.org/docs/latest/tutorial/security)
+- [GHSA-4r6h-8v6p-xvw6 – SheetJS Community Edition](https://github.com/advisories/GHSA-4r6h-8v6p-xvw6)
+- [GHSA-5pgg-2g8v-p4x9 – SheetJS ReDoS](https://github.com/advisories/GHSA-5pgg-2g8v-p4x9)
+- [Electron – Sicherheit](https://www.electronjs.org/docs/latest/tutorial/security)
 
-## Roadmap
+## Roadmap (Auswahl)
 
-- [x] Project structure
-- [x] ExcelAdapter (`.xlsx`, `.xls`)
-- [x] CsvAdapter
-- [x] Column mapping UI
-- [x] Validator
-- [x] Dry-Run preview
-- [x] Importer (multi-pass)
-- [x] OpenProject API client
-- [x] Electron UI
-- [ ] MSProject XML adapter
-- [ ] Saved mapping profiles
-- [ ] Auto-updater
+- [x] Kern-Flows (Import, Dry-Run, Mapping, Validator, Multi-Pass, OP-Client, UI)
+- [x] CSV-Export importierter Arbeitspakete
+- [ ] MS Project / XML-Adapter (nicht implementiert)
+- [ ] Gespeicherte Mapping-Profile (nicht implementiert)
+- [ ] Auto-Updater
 
 ## License
 

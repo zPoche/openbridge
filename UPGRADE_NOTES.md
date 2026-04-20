@@ -20,7 +20,9 @@
 ## Skripte / Build
 
 - `npm run dev` und `npm run build` sind mit installiertem **Node.js inkl. npm auf dem PATH** geprüft (electron-builder 26 ruft intern `npm list` auf; ohne erreichbares `npm` kann die Modulsammlung fehlschlagen).
-- `electron-builder`-Konfiguration im `package.json`-Feld `build` unverändert; NSIS-Build unter Windows erfolgreich getestet.
+- **Windows-Artefakte:** `electron-builder` schreibt nach **`release/`** (Installer `openbridge Setup <version>.exe`, dazu `win-unpacked/`). Ältere Hinweise auf nur `dist/` sind obsolet.
+- **CI:** Workflow `.github/workflows/release.yml` — `windows-latest`, `npm ci`, `npm run build`, Artifact-Upload; optionaler Release-Upload auskommentiert.
+- **`package.json`:** u. a. `author` gesetzt (Hinweis von electron-builder), `artifactName`, explizites **`directories.output`: `release`**.
 
 ## Bekannte Restpunkte
 

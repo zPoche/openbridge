@@ -1,0 +1,52 @@
+# Windows NSIS build (Release Candidate / tagged releases).
+# Kein Auto-Updater, kein Publishing bei jedem Push — nur manuell oder per Git-Tag.
+
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      # Kein Code-Signing-Zertifikat im Repo — verhindert hängende Signatur-Suche in CI.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build NSIS installer
+        run: npm run build
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openbridge-windows-nsis
+          path: |
+            release/*.exe
+            release/*.blockmap
+
+      # Optional: GitHub Release mit Installer befüllen (benötigt Schreibrecht auf Releases).
+      # Nach ersten erfolgreichen Builds auskommentieren und testen.
+      # - name: Publish GitHub Release
+      #   if: startsWith(github.ref, 'refs/tags/v')
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     files: |
+      #       release/*.exe
+      #       release/*.blockmap
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
