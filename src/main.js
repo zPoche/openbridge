@@ -1,7 +1,19 @@
 require('dotenv').config();
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const fs = require('fs').promises;
+
+function mainLog(...args) {
+  console.log('[main]', ...args);
+}
+
+process.on('uncaughtException', (err) => {
+  console.error('[main] uncaughtException:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandledRejection:', reason);
+});
 const XLSX = require('xlsx');
 
 const ExcelAdapter = require('./adapters/ExcelAdapter');
@@ -307,11 +319,17 @@ async function saveSettingsToDisk(settings) {
 }
 
 function createWindow() {
+  mainLog('createWindow start');
+  const preloadPath = path.join(__dirname, 'ui', 'preload.js');
+  const htmlPath = path.join(__dirname, 'ui', 'index.html');
+  mainLog('preload path:', preloadPath);
+  mainLog('html path:', htmlPath);
+
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
     webPreferences: {
-      preload: path.join(__dirname, 'ui', 'preload.js'),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -319,10 +337,31 @@ function createWindow() {
     title: 'openbridge',
   });
 
-  win.loadFile(path.join(__dirname, 'ui', 'index.html'));
+  win.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error('[main] did-fail-load', { errorCode, errorDescription, validatedURL });
+  });
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[main] render-process-gone', details);
+  });
+  win.on('closed', () => {
+    mainLog('window closed');
+  });
+
+  // file:// URLs treat "#" as fragment; paths like ...\#Coding\... break loadFile — use pathToFileURL
+  const fileUrl = pathToFileURL(htmlPath).href;
+  mainLog('loadURL:', fileUrl);
+  win.loadURL(fileUrl);
 }
 
-app.whenReady().then(createWindow);
+app
+  .whenReady()
+  .then(() => {
+    mainLog('app ready');
+    createWindow();
+  })
+  .catch((err) => {
+    console.error('[main] startup failed:', err);
+  });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
