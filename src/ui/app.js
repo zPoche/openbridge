@@ -159,6 +159,7 @@ function actionLabelDryRun(action) {
   if (action === 'CREATE (dry-run)') return 'Erstellen';
   if (action === 'UPDATE (dry-run)') return 'Aktualisieren';
   if (action === 'ERROR') return 'Fehler';
+  if (action === 'WARN') return 'Hinweis';
   return action || '—';
 }
 
@@ -205,11 +206,12 @@ function renderPreview(result) {
     const act = escapeHtml(actionLabelDryRun(entry.action));
     const warns = rowWarnings(result.warnings, entry.sourceRow, entry.title);
     const warnText = warns.map((w) => w.message).join(' / ');
-    const extraErr = entry.error ? String(entry.error) : '';
-    const cellMsg = escapeHtml([warnText, extraErr].filter(Boolean).join(' ') || '—');
+    const extraMsg = entry.error || entry.message || '';
+    const cellMsg = escapeHtml([warnText, extraMsg].filter(Boolean).join(' ') || '—');
 
     let cls = '';
     if (entry.action === 'ERROR' || entry.error) cls = 'row-error';
+    else if (entry.action === 'WARN') cls = 'row-warn';
     else if (warns.length) cls = 'row-warn';
 
     return `<tr class="${cls}"><td>${idx}</td><td>${title}</td><td>${act}</td><td>${start}</td><td>${end}</td><td>${parent}</td><td>${cellMsg}</td></tr>`;
