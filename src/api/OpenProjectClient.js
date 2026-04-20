@@ -23,8 +23,9 @@ class OpenProjectClient {
   }
 
   async getProjects() {
-    const res = await this.http.get('/projects');
-    return res.data._embedded.elements;
+    const res = await this.http.get('/projects', { params: { pageSize: 100 } });
+    const elements = (res.data && res.data._embedded && res.data._embedded.elements) || [];
+    return elements.map((p) => ({ id: p.id, name: p.name }));
   }
 
   async getWorkPackageForm(projectId) {
