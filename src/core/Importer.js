@@ -34,6 +34,8 @@ class Importer {
     this.registry = new IdRegistry();
     this._currentProjectId = projectId != null && projectId !== '' ? String(projectId) : null;
     this._dryRunSeq = 900000;
+    /** @type {Map<number, number>} source row index → OpenProject ID (fallback if local_id missing) */
+    this._opIdBySourceRow = new Map();
 
     const totalWp = workPackages.length;
     await this._pulse('validating', 0, Math.max(1, totalWp));
@@ -52,15 +54,22 @@ class Importer {
         errors: validation.errors,
         warnings: validation.warnings,
         log: this.log,
+        finalPackages: [],
       };
     }
 
     await this._pulse('validating', totalWp, Math.max(1, totalWp));
 
-    const topLevel = workPackages.filter((wp) => !wp.parent_local_id && !wp.openproject_id);
+    const hasParentRef = (wp) => {
+      const pl = wp.parent_local_id != null && String(wp.parent_local_id).trim() !== '';
+      const po = wp.parent_openproject_id != null && String(wp.parent_openproject_id).trim() !== '';
+      return pl || po;
+    };
+
+    const topLevel = workPackages.filter((wp) => !wp.openproject_id && !hasParentRef(wp));
     await this._importPass(topLevel, projectId, 'pass-1-parents');
 
-    const children = workPackages.filter((wp) => wp.parent_local_id && !wp.openproject_id);
+    const children = workPackages.filter((wp) => !wp.openproject_id && hasParentRef(wp));
     for (const wp of children) {
       const pid = wp.parent_local_id;
       if (pid != null && String(pid).trim() !== '' && !this.registry.has(pid)) {
@@ -78,6 +87,7 @@ class Importer {
     await this._updatePass(updates, 'pass-3-patch');
 
     const hadErrors = this.log.some((e) => e.action === 'ERROR');
+    const finalPackages = this.dryRun ? [] : this._buildFinalPackages(workPackages);
     return {
       success: !hadErrors,
       errors: hadErrors
@@ -91,7 +101,63 @@ class Importer {
         : [],
       warnings: validation.warnings,
       log: this.log,
+      finalPackages,
     };
+  }
+
+  /**
+   * Nach echtem Import: eine Zeile pro Eingabe-Arbeitspaket mit aufgelösten OpenProject-IDs
+   * (keine local_ids). Zeilen ohne ermittelbare OP-ID (fehlgeschlagenes Create) fehlen.
+   */
+  _buildFinalPackages(workPackages) {
+    const out = [];
+    for (const wp of workPackages) {
+      let opId = null;
+      if (wp.openproject_id != null && wp.openproject_id !== '') {
+        const n = Number(wp.openproject_id);
+        if (Number.isFinite(n)) opId = n;
+      }
+      if (!Number.isFinite(opId) && wp.local_id != null && String(wp.local_id).trim() !== '') {
+        const r = this.registry.resolve(wp.local_id);
+        if (Number.isFinite(Number(r))) opId = Number(r);
+      }
+      if (!Number.isFinite(opId) && wp._sourceRow != null && this._opIdBySourceRow.has(wp._sourceRow)) {
+        opId = this._opIdBySourceRow.get(wp._sourceRow);
+      }
+      if (!Number.isFinite(opId)) continue;
+
+      let parentOp = null;
+      if (wp.parent_local_id != null && String(wp.parent_local_id).trim() !== '') {
+        const pr = this.registry.resolve(wp.parent_local_id);
+        if (Number.isFinite(Number(pr))) parentOp = Number(pr);
+      }
+      if (parentOp == null && wp.parent_openproject_id != null && wp.parent_openproject_id !== '') {
+        const po = Number(wp.parent_openproject_id);
+        if (Number.isFinite(po)) parentOp = po;
+      }
+
+      const preds = Array.isArray(wp.predecessors) ? wp.predecessors : [];
+      const predOps = [];
+      for (const pl of preds) {
+        const x = this.registry.resolve(pl);
+        if (Number.isFinite(Number(x))) predOps.push(Number(x));
+      }
+
+      out.push({
+        openproject_id: opId,
+        parent_openproject_id: parentOp,
+        predecessor_openproject_ids: predOps,
+        title: wp.title != null ? String(wp.title) : '',
+        type: wp.type != null ? String(wp.type) : '',
+        status: wp.status != null ? String(wp.status) : '',
+        start_date: wp.start_date != null ? String(wp.start_date) : '',
+        end_date: wp.end_date != null ? String(wp.end_date) : '',
+        duration: wp.duration != null && wp.duration !== '' ? String(wp.duration) : '',
+        description: wp.description != null ? String(wp.description) : '',
+        assignee: wp.assignee != null ? String(wp.assignee) : '',
+      });
+    }
+    return out;
   }
 
   /**
@@ -105,7 +171,11 @@ class Importer {
     for (let i = 0; i < workPackages.length; i += 1) {
       await this._pulse(phase, i, Math.max(1, total));
       const wp = workPackages[i];
-      const parentId = this.registry.resolve(wp.parent_local_id);
+      let parentId = this.registry.resolve(wp.parent_local_id);
+      if (parentId == null && wp.parent_openproject_id != null && wp.parent_openproject_id !== '') {
+        const po = Number(wp.parent_openproject_id);
+        if (Number.isFinite(po)) parentId = po;
+      }
       let typeHref = null;
       if (wp.type && this.client && !this.dryRun && projectId) {
         try {
@@ -146,6 +216,9 @@ class Importer {
         if (wp.local_id != null && String(wp.local_id).trim() !== '') {
           this.registry.register(wp.local_id, created.id);
         }
+        if (wp._sourceRow != null) {
+          this._opIdBySourceRow.set(wp._sourceRow, created.id);
+        }
         this.log.push({
           action: 'CREATED',
           title: wp.title,
@@ -171,6 +244,18 @@ class Importer {
     for (let i = 0; i < workPackages.length; i += 1) {
       await this._pulse(phase, i, Math.max(1, total));
       const wp = workPackages[i];
+      if (!this.dryRun && wp.openproject_id != null && wp.openproject_id !== '') {
+        const nid = Number(wp.openproject_id);
+        if (Number.isFinite(nid)) {
+          if (wp.local_id != null && String(wp.local_id).trim() !== '') {
+            this.registry.register(wp.local_id, nid);
+          }
+          if (wp._sourceRow != null) {
+            this._opIdBySourceRow.set(wp._sourceRow, nid);
+          }
+        }
+      }
+
       let typeHref = null;
       if (wp.type && this.client && !this.dryRun && this._currentProjectId) {
         try {

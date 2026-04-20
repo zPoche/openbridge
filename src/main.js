@@ -6,7 +6,7 @@ const { pathToFileURL } = require('url');
 const MAIN_LOG = path.join(os.tmpdir(), 'openbridge-electron-main.log');
 
 function mainLog(...args) {
-  const line = args
+  const body = args
     .map((a) => {
       if (typeof a === 'string') return a;
       try {
@@ -16,14 +16,10 @@ function mainLog(...args) {
       }
     })
     .join(' ');
+  const line = `[openbridge] ${body}`;
   const stamp = `${new Date().toISOString()} ${line}\n`;
   try {
-    process.stderr.write(`[main] ${line}\n`);
-  } catch (_) {
-    /* ignore */
-  }
-  try {
-    console.log('[main]', ...args);
+    process.stderr.write(`${line}\n`);
   } catch (_) {
     /* ignore */
   }
@@ -38,7 +34,16 @@ process.on('uncaughtException', (err) => {
   mainLog('uncaughtException', err && err.stack ? err.stack : String(err));
 });
 process.on('unhandledRejection', (reason) => {
-  mainLog('unhandledRejection', reason);
+  let text;
+  if (reason instanceof Error) text = reason.stack || reason.message;
+  else {
+    try {
+      text = JSON.stringify(reason);
+    } catch {
+      text = String(reason);
+    }
+  }
+  mainLog('unhandledRejection', text);
 });
 
 mainLog('main module: registering handlers, then loading dotenv/electron');
@@ -65,6 +70,39 @@ const Importer = require('./core/Importer');
 const OpenProjectClient = require('./api/OpenProjectClient');
 
 const baseAdapter = new BaseAdapter();
+
+const pkgJson = require(path.join(__dirname, '..', 'package.json'));
+const appVersion = typeof pkgJson.version === 'string' ? pkgJson.version : '1.0.0';
+
+/** Letzter erfolgreicher echter Import: finale AP-Zeilen nur mit OpenProject-IDs (für CSV-Export). */
+let lastImportPackages = [];
+
+/** Hauptfenster (Taskleisten-Fortschritt, sauber zurücksetzen). */
+let mainWindow = null;
+
+function ipcPlainObject(payload) {
+  return payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+}
+
+function updateTaskbarProgress(data) {
+  const w = mainWindow;
+  if (!w || w.isDestroyed()) return;
+  try {
+    const ph = data && data.phase;
+    if (ph === 'finished' || ph === 'error') {
+      w.setProgressBar(-1);
+      return;
+    }
+    const cur = data && data.current;
+    const tot = data && data.total;
+    if (tot != null && Number(tot) > 0 && cur != null && Number.isFinite(Number(cur))) {
+      const v = Math.min(1, Math.max(0, Number(cur) / Number(tot)));
+      w.setProgressBar(v);
+    }
+  } catch (e) {
+    mainLog('setProgressBar failed', e && e.message ? e.message : String(e));
+  }
+}
 
 function createAdapterForPath(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -179,7 +217,7 @@ function cellValue(row, mapping, field) {
 
   if (field === 'start_date' || field === 'end_date') return normalizeDateField(v);
 
-  if (field === 'openproject_id') {
+  if (field === 'openproject_id' || field === 'parent_openproject_id') {
     if (typeof v === 'number' && Number.isFinite(v)) return v;
     const cleaned = String(v).replace(/^#/, '').trim();
     const n = Number.parseInt(cleaned, 10);
@@ -230,6 +268,7 @@ function mapRowsToWorkPackages(rows, mapping) {
       end_date: cellValue(row, mapping, 'end_date'),
       duration: cellValue(row, mapping, 'duration'),
       parent_local_id: cellValue(row, mapping, 'parent_local_id'),
+      parent_openproject_id: cellValue(row, mapping, 'parent_openproject_id'),
       local_id: cellValue(row, mapping, 'local_id'),
       openproject_id: cellValue(row, mapping, 'openproject_id'),
       type: typeVal,
@@ -277,7 +316,12 @@ async function runPipeline(payloadIn = {}, { dryRun, client, onProgress }) {
     return {
       success: false,
       log: [],
-      errors: [{ ref: 'Datei', message: 'Kein Dateipfad.' }],
+      errors: [
+        {
+          ref: 'Datei',
+          message: `Dateityp wird nicht unterstützt (${ext || 'unbekannt'}). Erlaubt: .csv, .xlsx, .xls`,
+        },
+      ],
       warnings: [],
     };
   }
@@ -311,6 +355,7 @@ async function runPipeline(payloadIn = {}, { dryRun, client, onProgress }) {
         message:
           'Keine importierbaren Zeilen. Bitte die Spalte „Thema (title)“ zuordnen oder prüfen, ob die Datei gültige Daten enthält.',
       });
+      if (!dryRun) lastImportPackages = [];
       return {
         success: false,
         log: [],
@@ -351,14 +396,24 @@ async function runPipeline(payloadIn = {}, { dryRun, client, onProgress }) {
       });
     }
 
+    if (!dryRun) {
+      if (result.success && Array.isArray(result.finalPackages)) {
+        lastImportPackages = result.finalPackages;
+      } else {
+        lastImportPackages = [];
+      }
+    }
+
     return {
       success: result.success,
       log: result.log,
       errors: result.errors,
       warnings: [...(result.warnings || []), ...extraWarnings],
+      finalPackages: dryRun ? undefined : result.finalPackages,
     };
   } catch (err) {
     notify({ phase: 'error', current: 0, total: 0, message: err.message || String(err) });
+    if (!dryRun) lastImportPackages = [];
     return {
       success: false,
       log: [],
@@ -366,6 +421,50 @@ async function runPipeline(payloadIn = {}, { dryRun, client, onProgress }) {
       warnings: [],
     };
   }
+}
+
+/** CSV-Feld escaping; Trennzeichen im Export der Arbeitspakete ist Semikolon (;). */
+function escapeCsvFieldSemi(value) {
+  const s = value === undefined || value === null ? '' : String(value);
+  if (/[";\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function workPackagesToCsvSemicolon(packages) {
+  const sep = ';';
+  const cols = [
+    'openproject_id',
+    'parent_openproject_id',
+    'predecessor_openproject_ids',
+    'title',
+    'type',
+    'status',
+    'start_date',
+    'end_date',
+    'duration',
+    'description',
+    'assignee',
+  ];
+  const header = cols.join(sep);
+  const lines = [header];
+  for (const p of packages) {
+    const pred = (p.predecessor_openproject_ids || []).join('|');
+    const row = [
+      p.openproject_id,
+      p.parent_openproject_id == null ? '' : String(p.parent_openproject_id),
+      pred,
+      p.title,
+      p.type,
+      p.status,
+      p.start_date,
+      p.end_date,
+      p.duration,
+      p.description,
+      p.assignee,
+    ].map((c) => escapeCsvFieldSemi(c));
+    lines.push(row.join(sep));
+  }
+  return `\uFEFF${lines.join('\n')}\n`;
 }
 
 function escapeCsvField(value) {
@@ -406,11 +505,13 @@ function resultToCsvRows(result) {
 }
 
 function buildCsvFromRows(flatRows) {
-  if (!flatRows.length) return 'action,title,id,source_row,parent_local_id,start_date,end_date,error,message\n';
+  if (!flatRows.length) {
+    return '\uFEFFaction,title,id,source_row,parent_local_id,start_date,end_date,error,message\n';
+  }
   const keys = Object.keys(flatRows[0]);
   const header = keys.join(',');
   const lines = flatRows.map((r) => keys.map((k) => escapeCsvField(r[k])).join(','));
-  return `${header}\n${lines.join('\n')}\n`;
+  return `\uFEFF${header}\n${lines.join('\n')}\n`;
 }
 
 function settingsFilePath() {
@@ -479,6 +580,7 @@ function createWindow() {
         preload: preloadPath,
         contextIsolation: true,
         nodeIntegration: false,
+        sandbox: true,
       },
       titleBarStyle: 'default',
       title: 'openbridge',
@@ -504,17 +606,26 @@ function createWindow() {
   win.webContents.on('unresponsive', () => {
     mainLog('webContents unresponsive');
   });
-  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    mainLog('console-message', { level, message, line, sourceId });
-  });
+  if (process.env.OPENBRIDGE_LOG_RENDERER_CONSOLE === '1') {
+    win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+      mainLog('renderer-console', { level, message, line, sourceId });
+    });
+  }
   win.webContents.on('child-process-gone', (_event, details) => {
     mainLog('child-process-gone', details);
   });
   win.once('ready-to-show', () => {
     mainLog('ready-to-show');
   });
+  mainWindow = win;
   win.on('closed', () => {
     mainLog('window closed');
+    try {
+      win.setProgressBar(-1);
+    } catch (_) {
+      /* Fenster kann hier schon teilweise abgebaut sein */
+    }
+    if (mainWindow === win) mainWindow = null;
   });
 
   loadRendererHtml(win, htmlPath).catch((err) => {
@@ -536,6 +647,11 @@ app
   });
 
 app.on('before-quit', () => {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setProgressBar(-1);
+  } catch (_) {
+    /* ignore */
+  }
   mainLog('before-quit');
 });
 app.on('will-quit', () => {
@@ -551,15 +667,15 @@ app.on('window-all-closed', () => {
 ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
-    filters: [
-      { name: 'Supported Files', extensions: ['xlsx', 'csv', 'xml'] },
-    ],
+    filters: [{ name: 'Tabellen', extensions: ['xlsx', 'xls', 'csv'] }],
   });
+  if (result.canceled || !result.filePaths || !result.filePaths.length) return null;
   return result.filePaths[0] || null;
 });
 
-ipcMain.handle('get-columns', async (_event, { filePath }) => {
-  if (!filePath) {
+ipcMain.handle('get-columns', async (_event, payload) => {
+  const { filePath } = ipcPlainObject(payload);
+  if (!filePath || typeof filePath !== 'string' || !String(filePath).trim()) {
     return { columns: [], rowCount: 0, error: 'Kein Dateipfad übergeben.' };
   }
   try {
@@ -584,7 +700,7 @@ ipcMain.handle('load-settings', async () => {
 
 ipcMain.handle('save-settings', async (_event, settings) => {
   try {
-    await saveSettingsToDisk(settings || {});
+    await saveSettingsToDisk(ipcPlainObject(settings));
     return { success: true };
   } catch (err) {
     return { error: `Speichern der Einstellungen fehlgeschlagen: ${err.message}` };
@@ -606,6 +722,7 @@ ipcMain.handle('get-projects', async () => {
 });
 
 function sendImportProgress(sender, data) {
+  updateTaskbarProgress(data);
   try {
     if (sender && !sender.isDestroyed()) sender.send('import-progress', data);
   } catch (_) {
@@ -614,7 +731,7 @@ function sendImportProgress(sender, data) {
 }
 
 ipcMain.handle('dry-run', async (event, payload) => {
-  const p = payload && typeof payload === 'object' ? payload : {};
+  const p = ipcPlainObject(payload);
   const sender = event.sender;
   return runPipeline(p, {
     dryRun: true,
@@ -624,7 +741,7 @@ ipcMain.handle('dry-run', async (event, payload) => {
 });
 
 ipcMain.handle('import-file', async (event, payload) => {
-  const p = payload && typeof payload === 'object' ? payload : {};
+  const p = ipcPlainObject(payload);
   const sender = event.sender;
   const data = await loadSettingsData();
   if (data.error) {
@@ -693,11 +810,49 @@ ipcMain.handle('import-file', async (event, payload) => {
   }
 });
 
+ipcMain.handle('get-app-info', () => ({ version: appVersion }));
+
+ipcMain.handle('clear-last-import-packages', () => {
+  lastImportPackages = [];
+  return { ok: true };
+});
+
+ipcMain.handle('export-work-packages', async (event, rawOptions) => {
+  const options = ipcPlainObject(rawOptions);
+  const fmt = options.format === 'csv' || options.format == null ? 'csv' : String(options.format);
+  if (fmt !== 'csv') {
+    return { success: false, error: 'Nur format: csv wird unterstützt.' };
+  }
+  if (!Array.isArray(lastImportPackages) || lastImportPackages.length === 0) {
+    return { success: false, error: 'Kein Import-Ergebnis zum Export vorhanden.' };
+  }
+  if (!event.sender || event.sender.isDestroyed()) {
+    return { success: false, error: 'Fenster nicht verfügbar.' };
+  }
+  const { canceled, filePath } = await dialog.showSaveDialog(event.sender, {
+    title: 'Arbeitspakete exportieren',
+    defaultPath: 'openbridge-work-packages.csv',
+    filters: [{ name: 'CSV', extensions: ['csv'] }],
+  });
+  if (canceled || !filePath) return { canceled: true };
+  try {
+    const csv = workPackagesToCsvSemicolon(lastImportPackages);
+    await fs.writeFile(filePath, csv, 'utf8');
+    return { success: true, path: filePath };
+  } catch (e) {
+    return { success: false, error: e.message || String(e) };
+  }
+});
+
 ipcMain.handle('export-result', async (event, payload) => {
-  const kind = payload && payload.kind != null ? String(payload.kind) : 'export';
-  const result = payload && payload.result;
+  const p = ipcPlainObject(payload);
+  const kind = p.kind != null ? String(p.kind) : 'export';
+  const result = p.result;
   if (!result || typeof result !== 'object') {
-    return { error: 'Keine Daten zum Exportieren.' };
+    return { success: false, error: 'Keine Daten zum Exportieren.' };
+  }
+  if (!event.sender || event.sender.isDestroyed()) {
+    return { success: false, error: 'Fenster nicht verfügbar.' };
   }
   const flat = resultToCsvRows(result);
   const csv = buildCsvFromRows(flat);
@@ -711,6 +866,6 @@ ipcMain.handle('export-result', async (event, payload) => {
     await fs.writeFile(filePath, csv, 'utf8');
     return { success: true, path: filePath };
   } catch (e) {
-    return { error: e.message || String(e) };
+    return { success: false, error: e.message || String(e) };
   }
 });

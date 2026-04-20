@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld('bridge', {
   loadSettings: () => ipcRenderer.invoke('load-settings'),
   getProjects: () => ipcRenderer.invoke('get-projects'),
   exportResult: (payload) => ipcRenderer.invoke('export-result', payload),
+  exportWorkPackages: (options) => ipcRenderer.invoke('export-work-packages', options || {}),
+  getAppInfo: () => ipcRenderer.invoke('get-app-info'),
+  clearLastImportPackages: () => ipcRenderer.invoke('clear-last-import-packages'),
   onImportProgress: (handler) => {
     if (typeof handler !== 'function') return;
     ipcRenderer.on('import-progress', (_event, data) => {

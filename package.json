@@ -1,6 +1,6 @@
 {
   "name": "openbridge",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Import Gantt project plans into OpenProject",
   "main": "src/main.js",
   "scripts": {

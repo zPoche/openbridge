@@ -5,6 +5,7 @@ const TARGET_FIELDS = [
   { id: 'start_date', label: 'Startdatum (start_date)' },
   { id: 'end_date', label: 'Enddatum (end_date)' },
   { id: 'parent_local_id', label: 'Eltern-ID lokal (parent_local_id)' },
+  { id: 'parent_openproject_id', label: 'Parent OpenProject-ID (parent_openproject_id)' },
   { id: 'local_id', label: 'Lokale ID (local_id)' },
   { id: 'openproject_id', label: 'OpenProject-ID (openproject_id)' },
   { id: 'type', label: 'Typ (type)' },
@@ -24,12 +25,12 @@ let lastDryRunResult = null;
 let lastImportResult = null;
 
 const PHASE_LABELS = {
-  'reading-file': 'Lese Datei…',
-  validating: 'Validiere…',
-  'pass-1-parents': 'Pass 1: Eltern …',
-  'pass-2-children': 'Pass 2: Kinder …',
-  'pass-3-patch': 'Pass 3: Aktualisierungen …',
-  finished: 'Abgeschlossen',
+  'reading-file': 'Datei wird gelesen …',
+  validating: 'Daten werden geprüft …',
+  'pass-1-parents': 'Import: oberste Pakete …',
+  'pass-2-children': 'Import: untergeordnete Pakete …',
+  'pass-3-patch': 'Import: bestehende Pakete aktualisieren …',
+  finished: 'Fertig',
   error: 'Fehler',
 };
 
@@ -133,6 +134,10 @@ function updateExportButtonState() {
     const b = getEl(id);
     if (b) b.disabled = !can;
   });
+  const wpBtn = getEl('btn-export-work-packages');
+  if (wpBtn) {
+    wpBtn.disabled = !(lastImportResult && lastImportResult.success === true);
+  }
 }
 
 function setExportFeedback(text, variant) {
@@ -148,6 +153,27 @@ function setExportFeedback(text, variant) {
   el.classList.remove('hidden', 'ok', 'bad');
   if (variant === 'ok') el.classList.add('ok');
   if (variant === 'bad') el.classList.add('bad');
+}
+
+async function onExportWorkPackages() {
+  if (!lastImportResult || lastImportResult.success !== true) return;
+  setExportFeedback('', null);
+  try {
+    const r = await window.bridge.exportWorkPackages({ format: 'csv' });
+    if (r && r.canceled) return;
+    if (r && r.error) {
+      setExportFeedback(`Export fehlgeschlagen: ${r.error}`, 'bad');
+      return;
+    }
+    if (r && r.success && r.path) {
+      setExportFeedback(`Export abgeschlossen: ${r.path}`, 'ok');
+    } else {
+      setExportFeedback('Export abgeschlossen.', 'ok');
+    }
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    setExportFeedback(`Export fehlgeschlagen: ${msg}`, 'bad');
+  }
 }
 
 async function onExport() {
@@ -444,6 +470,18 @@ function openSettingsModal() {
   if (urlInput && typeof urlInput.focus === 'function') {
     urlInput.focus();
   }
+  const verEl = getEl('app-version');
+  if (verEl && window.bridge.getAppInfo) {
+    verEl.textContent = '…';
+    window.bridge
+      .getAppInfo()
+      .then((info) => {
+        verEl.textContent = info && info.version ? String(info.version) : 'Version unbekannt';
+      })
+      .catch(() => {
+        verEl.textContent = 'Version unbekannt';
+      });
+  }
 }
 
 function closeSettingsModal() {
@@ -579,6 +617,9 @@ function resetWizard() {
   lastImportResult = null;
   clearProgress();
   setExportFeedback('', null);
+  if (window.bridge.clearLastImportPackages) {
+    window.bridge.clearLastImportPackages().catch(() => {});
+  }
 
   const sel = getEl('selected-file');
   if (sel) sel.textContent = '';
@@ -634,6 +675,10 @@ async function onSelectFile() {
       currentRowCount = colResult.rowCount || 0;
       currentMapping = {};
       lastDryRunResult = null;
+      lastImportResult = null;
+      if (window.bridge.clearLastImportPackages) {
+        window.bridge.clearLastImportPackages().catch(() => {});
+      }
 
       const selected = getEl('selected-file');
       if (selected) {
@@ -645,6 +690,7 @@ async function onSelectFile() {
       setSectionHidden('step-log', true);
       const btnImport = getEl('btn-import');
       if (btnImport) btnImport.disabled = true;
+      updateExportButtonState();
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
       showValidationMessage(`Datei konnte nicht gelesen werden: ${msg}`, true);
@@ -666,6 +712,13 @@ async function onValidate() {
     showValidationMessage('', false);
     collectMappingFromDom();
 
+    lastImportResult = null;
+    setExportFeedback('', null);
+    if (window.bridge.clearLastImportPackages) {
+      window.bridge.clearLastImportPackages().catch(() => {});
+    }
+    updateExportButtonState();
+
     const projectId = getProjectId();
     let result;
     try {
@@ -678,6 +731,11 @@ async function onValidate() {
       const msg = err && err.message ? err.message : String(err);
       showValidationMessage(`Validierung fehlgeschlagen: ${msg}`, true);
       lastDryRunResult = null;
+      lastImportResult = null;
+      if (window.bridge.clearLastImportPackages) {
+        window.bridge.clearLastImportPackages().catch(() => {});
+      }
+      updateExportButtonState();
       clearProgress();
       return;
     }
@@ -732,6 +790,16 @@ async function onImport() {
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
       showValidationMessage(`Import fehlgeschlagen: ${msg}`, true);
+      lastImportResult = {
+        success: false,
+        log: [],
+        errors: [{ ref: 'Import', message: msg }],
+        warnings: [],
+      };
+      if (window.bridge.clearLastImportPackages) {
+        window.bridge.clearLastImportPackages().catch(() => {});
+      }
+      updateExportButtonState();
       clearProgress();
     }
   });
@@ -770,6 +838,8 @@ const btnExport = getEl('btn-export');
 const btnExportLog = getEl('btn-export-log');
 if (btnExport) btnExport.addEventListener('click', () => onExport());
 if (btnExportLog) btnExportLog.addEventListener('click', () => onExport());
+const btnExportWp = getEl('btn-export-work-packages');
+if (btnExportWp) btnExportWp.addEventListener('click', () => onExportWorkPackages());
 
 if (window.bridge && typeof window.bridge.onImportProgress === 'function') {
   window.bridge.onImportProgress((payload) => {

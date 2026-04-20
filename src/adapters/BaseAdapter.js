@@ -17,6 +17,7 @@ class BaseAdapter {
   buildWorkPackage({
     local_id = null,
     parent_local_id = null,
+    parent_openproject_id = null,
     openproject_id = null,
     title = '',
     type = null,
@@ -35,6 +36,7 @@ class BaseAdapter {
     return {
       local_id,
       parent_local_id,
+      parent_openproject_id,
       openproject_id,
       title,
       type,

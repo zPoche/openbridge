@@ -2,10 +2,13 @@
  * IdRegistry
  * Maps local IDs (from import file) to real OpenProject IDs.
  * Used to resolve parent references in multi-pass imports.
+ *
+ * Effectively: localIdToOpenProjectId — Map<string, number|string>
  */
 class IdRegistry {
   constructor() {
-    this.map = new Map(); // local_id → openproject_id
+    /** @type {Map<string, number|string>} local_id → openproject_id */
+    this.map = new Map();
   }
 
   register(local_id, openproject_id) {
