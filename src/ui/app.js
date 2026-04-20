@@ -233,8 +233,115 @@ async function withBusy(button, busyText, fn) {
 }
 
 function getProjectId() {
-  const input = getEl('project-id');
-  return input && input.value ? String(input.value).trim() : '';
+  const sel = getEl('project-id');
+  return sel && sel.value ? String(sel.value).trim() : '';
+}
+
+function resetProjectSelect() {
+  const sel = getEl('project-id');
+  if (sel) {
+    sel.innerHTML = '<option value="">— Projekt wählen —</option>';
+    sel.value = '';
+  }
+  const st = getEl('projects-status');
+  if (st) {
+    st.textContent = '';
+    st.classList.remove('error');
+  }
+}
+
+function openSettingsModal() {
+  const root = getEl('modal-settings');
+  if (!root) return;
+  root.classList.remove('hidden');
+  root.setAttribute('aria-hidden', 'false');
+}
+
+function closeSettingsModal() {
+  const root = getEl('modal-settings');
+  if (!root) return;
+  root.classList.add('hidden');
+  root.setAttribute('aria-hidden', 'true');
+}
+
+async function initSettingsFields() {
+  try {
+    const s = await window.bridge.loadSettings();
+    const urlEl = getEl('settings-url');
+    const keyEl = getEl('settings-apikey');
+    if (urlEl) urlEl.value = s.url || '';
+    if (keyEl) keyEl.value = s.apiKey || '';
+  } catch {
+    /* ignore */
+  }
+}
+
+async function onSaveSettings() {
+  const urlEl = getEl('settings-url');
+  const keyEl = getEl('settings-apikey');
+  const url = urlEl && urlEl.value ? String(urlEl.value).trim() : '';
+  const apiKey = keyEl && keyEl.value ? String(keyEl.value) : '';
+  await window.bridge.saveSettings({ url, apiKey });
+  closeSettingsModal();
+}
+
+async function onLoadProjects() {
+  const btn = getEl('btn-load-projects');
+  const status = getEl('projects-status');
+  const sel = getEl('project-id');
+  if (!btn || !sel) return;
+
+  const previous = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Lädt…';
+  if (status) {
+    status.textContent = '';
+    status.classList.remove('error');
+  }
+
+  try {
+    const result = await window.bridge.getProjects();
+    if (result && result.error) {
+      if (status) {
+        status.textContent = result.error;
+        status.classList.add('error');
+      }
+      return;
+    }
+
+    if (!Array.isArray(result)) {
+      if (status) {
+        status.textContent = 'Unerwartete Antwort vom Server.';
+        status.classList.add('error');
+      }
+      return;
+    }
+
+    const current = sel.value;
+    const opts = ['<option value="">— Projekt wählen —</option>'];
+    for (const p of result) {
+      const id = p.id != null ? String(p.id) : '';
+      const name = p.name != null ? String(p.name) : '';
+      const selected = id === current ? ' selected' : '';
+      opts.push(`<option value="${attrEscape(id)}"${selected}>${escapeHtml(name || id)}</option>`);
+    }
+    sel.innerHTML = opts.join('');
+    if (current && [...sel.options].some((o) => o.value === current)) {
+      sel.value = current;
+    }
+    if (status) {
+      status.textContent = `${result.length} Projekt(e) geladen.`;
+      status.classList.remove('error');
+    }
+  } catch (err) {
+    if (status) {
+      status.textContent = err && err.message ? err.message : String(err);
+      status.classList.add('error');
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = previous;
+  }
 }
 
 function resetWizard() {
@@ -246,8 +353,7 @@ function resetWizard() {
 
   const sel = getEl('selected-file');
   if (sel) sel.textContent = '';
-  const pid = getEl('project-id');
-  if (pid) pid.value = '';
+  resetProjectSelect();
   const map = getEl('mapping-table');
   if (map) map.innerHTML = '';
   const prevSum = getEl('preview-summary');
@@ -366,3 +472,21 @@ if (btnSelect) btnSelect.addEventListener('click', onSelectFile);
 if (btnValidate) btnValidate.addEventListener('click', onValidate);
 if (btnImport) btnImport.addEventListener('click', onImport);
 if (btnNew) btnNew.addEventListener('click', onNewImport);
+
+const btnSettings = getEl('btn-settings');
+const btnSettingsClose = getEl('btn-settings-close');
+const btnSettingsSave = getEl('btn-settings-save');
+const modalBackdrop = getEl('modal-settings-backdrop');
+const btnLoadProjects = getEl('btn-load-projects');
+
+if (btnSettings) btnSettings.addEventListener('click', openSettingsModal);
+if (btnSettingsClose) btnSettingsClose.addEventListener('click', closeSettingsModal);
+if (modalBackdrop) modalBackdrop.addEventListener('click', closeSettingsModal);
+if (btnSettingsSave) {
+  btnSettingsSave.addEventListener('click', async () => {
+    await onSaveSettings();
+  });
+}
+if (btnLoadProjects) btnLoadProjects.addEventListener('click', onLoadProjects);
+
+initSettingsFields();

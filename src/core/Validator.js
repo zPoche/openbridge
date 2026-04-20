@@ -15,8 +15,12 @@ class Validator {
         errors.push({ ref, rowIndex: rowLabel, message: 'Thema (title) ist erforderlich' });
       }
 
-      if (wp.start_date && wp.end_date) {
-        if (new Date(wp.start_date) > new Date(wp.end_date)) {
+      const startOk = this._isValidDateValue(wp.start_date);
+      const endOk = this._isValidDateValue(wp.end_date);
+      if (startOk && endOk) {
+        const ts = new Date(wp.start_date).getTime();
+        const te = new Date(wp.end_date).getTime();
+        if (!Number.isNaN(ts) && !Number.isNaN(te) && ts > te) {
           errors.push({
             ref,
             rowIndex: rowLabel,
@@ -26,7 +30,7 @@ class Validator {
       }
 
       const dur = this._parseDuration(wp.duration);
-      if (dur !== null && wp.start_date && wp.end_date) {
+      if (dur !== null && startOk && endOk) {
         warnings.push({
           ref,
           rowIndex: rowLabel,
@@ -40,6 +44,12 @@ class Validator {
     });
 
     return { errors, warnings, valid: errors.length === 0 };
+  }
+
+  _isValidDateValue(value) {
+    if (value === null || value === undefined || value === '') return false;
+    const t = new Date(value).getTime();
+    return !Number.isNaN(t);
   }
 
   _parseDuration(duration) {

@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs').promises;
 const XLSX = require('xlsx');
 
 const ExcelAdapter = require('./adapters/ExcelAdapter');
@@ -18,7 +19,7 @@ function createAdapterForPath(filePath) {
   throw new Error(`Nicht unterstützter Dateityp: ${ext || '(unbekannt)'}`);
 }
 
-function formatExcelSerial(value) {
+function formatExcelSerialWithXlsx(value) {
   try {
     const date = XLSX.SSF.parse_date_code(value);
     return `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`;
@@ -27,15 +28,84 @@ function formatExcelSerial(value) {
   }
 }
 
+/**
+ * Excel-Serienzahl (Tage seit 1899-12-30) → YYYY-MM-DD (UTC-Mitternachtsapproximation).
+ */
+function excelSerialToYmd(serial) {
+  if (!Number.isFinite(serial)) return null;
+  const whole = Math.floor(serial);
+  const excelEpochUtc = Date.UTC(1899, 11, 30);
+  const ms = excelEpochUtc + whole * 86400000;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+function normalizeNumberToDate(raw) {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null;
+  const fromXlsx = formatExcelSerialWithXlsx(raw);
+  if (fromXlsx) return fromXlsx;
+
+  if (Number.isInteger(raw) && raw >= 1500 && raw <= 2200) {
+    return null;
+  }
+
+  const whole = Math.floor(raw);
+  if (whole >= 1 && whole < 10000000) {
+    return excelSerialToYmd(raw);
+  }
+
+  return null;
+}
+
+/**
+ * Trimmt und erkennt YYYY-MM-DD, DD.MM.YYYY, DD/MM/YYYY → YYYY-MM-DD.
+ */
+function parseDateStringToYmd(str) {
+  const t = String(str).trim();
+  if (!t) return null;
+
+  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const ymd = `${m[1]}-${m[2]}-${m[3]}`;
+    const check = new Date(`${m[1]}-${m[2]}-${m[3]}T12:00:00.000Z`).getTime();
+    return Number.isNaN(check) ? null : ymd;
+  }
+
+  m = t.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (m) {
+    const dd = String(m[1]).padStart(2, '0');
+    const mm = String(m[2]).padStart(2, '0');
+    const yyyy = m[3];
+    const check = new Date(`${yyyy}-${mm}-${dd}T12:00:00.000Z`).getTime();
+    return Number.isNaN(check) ? null : `${yyyy}-${mm}-${dd}`;
+  }
+
+  m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const dd = String(m[1]).padStart(2, '0');
+    const mm = String(m[2]).padStart(2, '0');
+    const yyyy = m[3];
+    const check = new Date(`${yyyy}-${mm}-${dd}T12:00:00.000Z`).getTime();
+    return Number.isNaN(check) ? null : `${yyyy}-${mm}-${dd}`;
+  }
+
+  return null;
+}
+
 function normalizeDateField(raw) {
   if (raw === undefined || raw === null || raw === '') return null;
-  if (raw instanceof Date) return raw.toISOString().split('T')[0];
-  if (typeof raw === 'number') {
-    const iso = formatExcelSerial(raw);
-    if (iso) return iso;
+
+  if (raw instanceof Date) {
+    if (Number.isNaN(raw.getTime())) return null;
+    return raw.toISOString().slice(0, 10);
   }
-  const s = String(raw).trim();
-  return s || null;
+
+  if (typeof raw === 'number') {
+    return normalizeNumberToDate(raw);
+  }
+
+  return parseDateStringToYmd(raw);
 }
 
 function cellValue(row, mapping, field) {
@@ -158,6 +228,33 @@ async function runPipeline({ filePath, mapping, projectId }, { dryRun, client })
   }
 }
 
+function settingsFilePath() {
+  return path.join(app.getPath('userData'), 'settings.json');
+}
+
+async function loadSettingsFromDisk() {
+  try {
+    const raw = await fs.readFile(settingsFilePath(), 'utf8');
+    const data = JSON.parse(raw);
+    return {
+      url: typeof data.url === 'string' ? data.url : '',
+      apiKey: typeof data.apiKey === 'string' ? data.apiKey : '',
+    };
+  } catch {
+    return { url: '', apiKey: '' };
+  }
+}
+
+async function saveSettingsToDisk(settings) {
+  const dir = app.getPath('userData');
+  await fs.mkdir(dir, { recursive: true });
+  const payload = {
+    url: settings && typeof settings.url === 'string' ? settings.url : '',
+    apiKey: settings && typeof settings.apiKey === 'string' ? settings.apiKey : '',
+  };
+  await fs.writeFile(settingsFilePath(), JSON.stringify(payload, null, 2), 'utf8');
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
@@ -208,13 +305,32 @@ ipcMain.handle('get-columns', async (_event, { filePath }) => {
   }
 });
 
+ipcMain.handle('load-settings', async () => loadSettingsFromDisk());
+
+ipcMain.handle('save-settings', async (_event, settings) => {
+  await saveSettingsToDisk(settings || {});
+  return { ok: true };
+});
+
+ipcMain.handle('get-projects', async () => {
+  try {
+    const { url, apiKey } = await loadSettingsFromDisk();
+    if (!url || !apiKey) {
+      return { error: 'Bitte OpenProject URL und API-Key in den Einstellungen speichern.' };
+    }
+    const client = new OpenProjectClient(url, apiKey);
+    return await client.getProjects();
+  } catch (err) {
+    return { error: err.message || String(err) };
+  }
+});
+
 ipcMain.handle('dry-run', async (_event, payload) => {
   return runPipeline(payload, { dryRun: true, client: null });
 });
 
 ipcMain.handle('import-file', async (_event, payload) => {
-  const baseUrl = process.env.OPENPROJECT_URL;
-  const apiKey = process.env.OPENPROJECT_API_KEY;
+  const { url: baseUrl, apiKey } = await loadSettingsFromDisk();
   if (!baseUrl || !apiKey) {
     return {
       success: false,
@@ -223,7 +339,7 @@ ipcMain.handle('import-file', async (_event, payload) => {
         {
           ref: 'Konfiguration',
           message:
-            'OPENPROJECT_URL und OPENPROJECT_API_KEY müssen in der Umgebung oder .env gesetzt sein.',
+            'OpenProject URL und API-Key fehlen. Bitte über das Zahnrad (Einstellungen) speichern.',
         },
       ],
       warnings: [],
