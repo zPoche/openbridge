@@ -1,19 +1,61 @@
-require('dotenv').config();
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const fsSync = require('fs');
 const path = require('path');
+const os = require('os');
 const { pathToFileURL } = require('url');
-const fs = require('fs').promises;
+
+const MAIN_LOG = path.join(os.tmpdir(), 'openbridge-electron-main.log');
 
 function mainLog(...args) {
-  console.log('[main]', ...args);
+  const line = args
+    .map((a) => {
+      if (typeof a === 'string') return a;
+      try {
+        return JSON.stringify(a);
+      } catch {
+        return String(a);
+      }
+    })
+    .join(' ');
+  const stamp = `${new Date().toISOString()} ${line}\n`;
+  try {
+    process.stderr.write(`[main] ${line}\n`);
+  } catch (_) {
+    /* ignore */
+  }
+  try {
+    console.log('[main]', ...args);
+  } catch (_) {
+    /* ignore */
+  }
+  try {
+    fsSync.appendFileSync(MAIN_LOG, stamp);
+  } catch (_) {
+    /* ignore */
+  }
 }
 
 process.on('uncaughtException', (err) => {
-  console.error('[main] uncaughtException:', err);
+  mainLog('uncaughtException', err && err.stack ? err.stack : String(err));
 });
 process.on('unhandledRejection', (reason) => {
-  console.error('[main] unhandledRejection:', reason);
+  mainLog('unhandledRejection', reason);
 });
+
+mainLog('main module: registering handlers, then loading dotenv/electron');
+require('dotenv').config();
+
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+
+if (process.env.ELECTRON_RUN_AS_NODE) {
+  mainLog('WARNING: ELECTRON_RUN_AS_NODE is set; GUI may not start as expected.');
+}
+if (process.env.OPENBRIDGE_DISABLE_GPU === '1') {
+  app.disableHardwareAcceleration();
+  mainLog('disableHardwareAcceleration (OPENBRIDGE_DISABLE_GPU=1)');
+}
+
+const fs = require('fs').promises;
+
 const XLSX = require('xlsx');
 
 const ExcelAdapter = require('./adapters/ExcelAdapter');
@@ -318,52 +360,102 @@ async function saveSettingsToDisk(settings) {
   await fs.writeFile(settingsFilePath(), JSON.stringify(payload, null, 2), 'utf8');
 }
 
+function loadRendererHtml(win, htmlFilePath) {
+  if (htmlFilePath.includes('#')) {
+    const href = pathToFileURL(htmlFilePath).href;
+    mainLog('loadURL (path contains #):', href);
+    return win.loadURL(href);
+  }
+  mainLog('loadFile (local HTML, no # in path):', htmlFilePath);
+  return win.loadFile(htmlFilePath);
+}
+
 function createWindow() {
   mainLog('createWindow start');
   const preloadPath = path.join(__dirname, 'ui', 'preload.js');
-  const htmlPath = path.join(__dirname, 'ui', 'index.html');
-  mainLog('preload path:', preloadPath);
-  mainLog('html path:', htmlPath);
+  let htmlPath = path.join(__dirname, 'ui', 'index.html');
+  if (process.env.OPENBRIDGE_MINIMAL_UI === '1') {
+    htmlPath = path.join(__dirname, 'ui', 'minimal.html');
+    mainLog('OPENBRIDGE_MINIMAL_UI=1 →', htmlPath);
+  }
+  mainLog('preload path:', preloadPath, 'exists:', fsSync.existsSync(preloadPath));
+  mainLog('html path:', htmlPath, 'exists:', fsSync.existsSync(htmlPath));
+  mainLog('diag log file:', MAIN_LOG);
 
-  const win = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    webPreferences: {
-      preload: preloadPath,
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-    titleBarStyle: 'default',
-    title: 'openbridge',
+  let win;
+  try {
+    win = new BrowserWindow({
+      width: 1200,
+      height: 800,
+      webPreferences: {
+        preload: preloadPath,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+      titleBarStyle: 'default',
+      title: 'openbridge',
+    });
+  } catch (err) {
+    mainLog('new BrowserWindow threw:', err && err.stack ? err.stack : String(err));
+    throw err;
+  }
+
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    mainLog('did-fail-load', { errorCode, errorDescription, validatedURL });
   });
-
-  win.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
-    console.error('[main] did-fail-load', { errorCode, errorDescription, validatedURL });
+  win.webContents.on('did-finish-load', () => {
+    mainLog('did-finish-load', win.webContents.getURL());
+    if (process.env.OPENBRIDGE_DEVTOOLS === '1') {
+      mainLog('OPENBRIDGE_DEVTOOLS=1 → openDevTools');
+      win.webContents.openDevTools({ mode: 'detach' });
+    }
   });
   win.webContents.on('render-process-gone', (_event, details) => {
-    console.error('[main] render-process-gone', details);
+    mainLog('render-process-gone', details);
+  });
+  win.webContents.on('unresponsive', () => {
+    mainLog('webContents unresponsive');
+  });
+  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    mainLog('console-message', { level, message, line, sourceId });
+  });
+  win.webContents.on('child-process-gone', (_event, details) => {
+    mainLog('child-process-gone', details);
+  });
+  win.once('ready-to-show', () => {
+    mainLog('ready-to-show');
   });
   win.on('closed', () => {
     mainLog('window closed');
   });
 
-  // file:// URLs treat "#" as fragment; paths like ...\#Coding\... break loadFile — use pathToFileURL
-  const fileUrl = pathToFileURL(htmlPath).href;
-  mainLog('loadURL:', fileUrl);
-  win.loadURL(fileUrl);
+  loadRendererHtml(win, htmlPath).catch((err) => {
+    mainLog('loadRendererHtml rejected:', err && err.stack ? err.stack : String(err));
+  });
 }
 
 app
   .whenReady()
   .then(() => {
     mainLog('app ready');
+    mainLog('versions:', { electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node });
+    mainLog('userData:', app.getPath('userData'));
+    mainLog('hint: if startup is flaky, try a fresh userData folder once (rename old openbridge data under userData).');
     createWindow();
   })
   .catch((err) => {
-    console.error('[main] startup failed:', err);
+    mainLog('startup failed:', err && err.stack ? err.stack : String(err));
   });
 
+app.on('before-quit', () => {
+  mainLog('before-quit');
+});
+app.on('will-quit', () => {
+  mainLog('will-quit');
+});
+
 app.on('window-all-closed', () => {
+  mainLog('window-all-closed');
   if (process.platform !== 'darwin') app.quit();
 });
 

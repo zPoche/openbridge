@@ -7,6 +7,14 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <script>
+    window.addEventListener('error', function (e) {
+      console.error('[renderer] error', e.message, e.filename, e.lineno, e.error);
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      console.error('[renderer] unhandledrejection', e.reason);
+    });
+  </script>
   <div id="app">
     <header>
       <button type="button" id="btn-settings" title="Einstellungen">⚙️</button>
