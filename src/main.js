@@ -108,7 +108,7 @@ function normalizeDateField(raw) {
   return parseDateStringToYmd(raw);
 }
 
-function cellValue(row, mapping, field) {
+function rawCellValue(row, mapping, field) {
   const col = mapping[field];
   if (col === undefined || col === null) return null;
   if (typeof col !== 'string' || col.trim() === '') return null;
@@ -116,6 +116,12 @@ function cellValue(row, mapping, field) {
   if (!Object.prototype.hasOwnProperty.call(row, key)) return null;
   const v = row[key];
   if (v === undefined || v === null || v === '') return null;
+  return v;
+}
+
+function cellValue(row, mapping, field) {
+  const v = rawCellValue(row, mapping, field);
+  if (v === null || v === undefined) return null;
 
   if (field === 'start_date' || field === 'end_date') return normalizeDateField(v);
 
@@ -136,6 +142,17 @@ function cellValue(row, mapping, field) {
   }
 
   return v;
+}
+
+function attachDateDebug(wp, row, mapping) {
+  const rawStart = rawCellValue(row, mapping, 'start_date');
+  const rawEnd = rawCellValue(row, mapping, 'end_date');
+  wp._debugDate = {
+    rawStart: rawStart === undefined ? null : rawStart,
+    rawEnd: rawEnd === undefined ? null : rawEnd,
+    normStart: wp.start_date,
+    normEnd: wp.end_date,
+  };
 }
 
 function mapRowsToWorkPackages(rows, mapping) {
@@ -165,6 +182,7 @@ function mapRowsToWorkPackages(rows, mapping) {
       description: cellValue(row, mapping, 'description') || '',
     });
     wp._sourceRow = sourceIndex;
+    attachDateDebug(wp, row, mapping);
     workPackages.push(wp);
   }
 
@@ -232,16 +250,24 @@ function settingsFilePath() {
   return path.join(app.getPath('userData'), 'settings.json');
 }
 
-async function loadSettingsFromDisk() {
+async function loadSettingsData() {
   try {
     const raw = await fs.readFile(settingsFilePath(), 'utf8');
-    const data = JSON.parse(raw);
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (e) {
+      return { error: `Lesen der Einstellungen fehlgeschlagen: Ungültiges JSON (${e.message})` };
+    }
     return {
       url: typeof data.url === 'string' ? data.url : '',
       apiKey: typeof data.apiKey === 'string' ? data.apiKey : '',
     };
-  } catch {
-    return { url: '', apiKey: '' };
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      return { url: '', apiKey: '' };
+    }
+    return { error: `Lesen der Einstellungen fehlgeschlagen: ${err.message}` };
   }
 }
 
@@ -305,20 +331,29 @@ ipcMain.handle('get-columns', async (_event, { filePath }) => {
   }
 });
 
-ipcMain.handle('load-settings', async () => loadSettingsFromDisk());
+ipcMain.handle('load-settings', async () => {
+  const data = await loadSettingsData();
+  if (data.error) return { error: data.error };
+  return { url: data.url, apiKey: data.apiKey };
+});
 
 ipcMain.handle('save-settings', async (_event, settings) => {
-  await saveSettingsToDisk(settings || {});
-  return { ok: true };
+  try {
+    await saveSettingsToDisk(settings || {});
+    return { success: true };
+  } catch (err) {
+    return { error: `Speichern der Einstellungen fehlgeschlagen: ${err.message}` };
+  }
 });
 
 ipcMain.handle('get-projects', async () => {
   try {
-    const { url, apiKey } = await loadSettingsFromDisk();
-    if (!url || !apiKey) {
+    const data = await loadSettingsData();
+    if (data.error) return { error: data.error };
+    if (!data.url || !data.apiKey) {
       return { error: 'Bitte OpenProject URL und API-Key in den Einstellungen speichern.' };
     }
-    const client = new OpenProjectClient(url, apiKey);
+    const client = new OpenProjectClient(data.url, data.apiKey);
     return await client.getProjects();
   } catch (err) {
     return { error: err.message || String(err) };
@@ -330,7 +365,17 @@ ipcMain.handle('dry-run', async (_event, payload) => {
 });
 
 ipcMain.handle('import-file', async (_event, payload) => {
-  const { url: baseUrl, apiKey } = await loadSettingsFromDisk();
+  const data = await loadSettingsData();
+  if (data.error) {
+    return {
+      success: false,
+      log: [],
+      errors: [{ ref: 'Konfiguration', message: data.error }],
+      warnings: [],
+    };
+  }
+  const baseUrl = data.url;
+  const apiKey = data.apiKey;
   if (!baseUrl || !apiKey) {
     return {
       success: false,

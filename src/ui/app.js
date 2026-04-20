@@ -12,6 +12,7 @@ const TARGET_FIELDS = [
 ];
 
 const UNASSIGNED_VALUE = '';
+const LABEL_LOAD_PROJECTS = 'Projekte abrufen';
 
 let currentFilePath = null;
 let currentColumns = [];
@@ -37,6 +38,32 @@ function attrEscape(text) {
 
 function getEl(id) {
   return document.getElementById(id);
+}
+
+function clearSettingsError() {
+  const el = getEl('settings-error');
+  if (!el) return;
+  el.textContent = '';
+  el.classList.add('hidden');
+}
+
+function showSettingsError(message) {
+  const el = getEl('settings-error');
+  if (!el) return;
+  el.textContent = message;
+  el.classList.remove('hidden');
+}
+
+function isSettingsModalOpen() {
+  const root = getEl('modal-settings');
+  return !!(root && !root.classList.contains('hidden'));
+}
+
+function clearProjectsStatusVisual() {
+  const st = getEl('projects-status');
+  if (!st) return;
+  st.textContent = '';
+  st.classList.remove('error', 'success', 'neutral');
 }
 
 function setSectionHidden(id, hidden) {
@@ -208,6 +235,9 @@ function renderImportLog(result) {
     if (entry.title) parts.push(`— ${escapeHtml(entry.title)}`);
     if (entry.id != null) parts.push(`(ID ${escapeHtml(String(entry.id))})`);
     if (entry.error) parts.push(`: ${escapeHtml(entry.error)}`);
+    if (entry.debug) {
+      parts.push(` — ${escapeHtml(JSON.stringify(entry.debug))}`);
+    }
     const isErr = entry.action === 'ERROR' || !!entry.error;
     const cls = isErr ? 'log-entry bad' : 'log-entry ok';
     return `<div class="${cls}">${parts.join(' ')}</div>`;
@@ -243,14 +273,11 @@ function resetProjectSelect() {
     sel.innerHTML = '<option value="">— Projekt wählen —</option>';
     sel.value = '';
   }
-  const st = getEl('projects-status');
-  if (st) {
-    st.textContent = '';
-    st.classList.remove('error');
-  }
+  clearProjectsStatusVisual();
 }
 
 function openSettingsModal() {
+  clearSettingsError();
   const root = getEl('modal-settings');
   if (!root) return;
   root.classList.remove('hidden');
@@ -258,6 +285,7 @@ function openSettingsModal() {
 }
 
 function closeSettingsModal() {
+  clearSettingsError();
   const root = getEl('modal-settings');
   if (!root) return;
   root.classList.add('hidden');
@@ -265,14 +293,26 @@ function closeSettingsModal() {
 }
 
 async function initSettingsFields() {
+  const urlEl = getEl('settings-url');
+  const keyEl = getEl('settings-apikey');
   try {
-    const s = await window.bridge.loadSettings();
-    const urlEl = getEl('settings-url');
-    const keyEl = getEl('settings-apikey');
-    if (urlEl) urlEl.value = s.url || '';
-    if (keyEl) keyEl.value = s.apiKey || '';
-  } catch {
-    /* ignore */
+    const data = await window.bridge.loadSettings();
+    if (data && data.error) {
+      if (typeof console !== 'undefined' && console.error) {
+        console.error(data.error);
+      }
+      if (urlEl) urlEl.value = '';
+      if (keyEl) keyEl.value = '';
+      return;
+    }
+    if (urlEl) urlEl.value = data.url || '';
+    if (keyEl) keyEl.value = data.apiKey || '';
+  } catch (err) {
+    if (typeof console !== 'undefined' && console.error) {
+      console.error(err);
+    }
+    if (urlEl) urlEl.value = '';
+    if (keyEl) keyEl.value = '';
   }
 }
 
@@ -281,8 +321,18 @@ async function onSaveSettings() {
   const keyEl = getEl('settings-apikey');
   const url = urlEl && urlEl.value ? String(urlEl.value).trim() : '';
   const apiKey = keyEl && keyEl.value ? String(keyEl.value) : '';
-  await window.bridge.saveSettings({ url, apiKey });
-  closeSettingsModal();
+  clearSettingsError();
+  try {
+    const result = await window.bridge.saveSettings({ url, apiKey });
+    if (result && result.error) {
+      showSettingsError(`Speichern fehlgeschlagen: ${result.error}`);
+      return;
+    }
+    closeSettingsModal();
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    showSettingsError(`Speichern fehlgeschlagen: ${msg}`);
+  }
 }
 
 async function onLoadProjects() {
@@ -291,19 +341,16 @@ async function onLoadProjects() {
   const sel = getEl('project-id');
   if (!btn || !sel) return;
 
-  const previous = btn.textContent;
+  clearProjectsStatusVisual();
   btn.disabled = true;
   btn.textContent = 'Lädt…';
-  if (status) {
-    status.textContent = '';
-    status.classList.remove('error');
-  }
 
   try {
     const result = await window.bridge.getProjects();
     if (result && result.error) {
       if (status) {
-        status.textContent = result.error;
+        status.textContent = `Fehler beim Laden der Projekte: ${result.error}`;
+        status.classList.remove('success', 'neutral');
         status.classList.add('error');
       }
       return;
@@ -311,7 +358,8 @@ async function onLoadProjects() {
 
     if (!Array.isArray(result)) {
       if (status) {
-        status.textContent = 'Unerwartete Antwort vom Server.';
+        status.textContent = 'Fehler beim Laden der Projekte: Unerwartete Antwort vom Server.';
+        status.classList.remove('success', 'neutral');
         status.classList.add('error');
       }
       return;
@@ -329,18 +377,27 @@ async function onLoadProjects() {
     if (current && [...sel.options].some((o) => o.value === current)) {
       sel.value = current;
     }
+
     if (status) {
-      status.textContent = `${result.length} Projekt(e) geladen.`;
-      status.classList.remove('error');
+      status.classList.remove('error', 'neutral');
+      if (result.length === 0) {
+        status.textContent = 'Keine Projekte gefunden';
+        status.classList.add('neutral');
+      } else {
+        status.textContent = 'Projekte geladen';
+        status.classList.add('success');
+      }
     }
   } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
     if (status) {
-      status.textContent = err && err.message ? err.message : String(err);
+      status.textContent = `Fehler beim Laden der Projekte: ${msg}`;
+      status.classList.remove('success', 'neutral');
       status.classList.add('error');
     }
   } finally {
     btn.disabled = false;
-    btn.textContent = previous;
+    btn.textContent = LABEL_LOAD_PROJECTS;
   }
 }
 
@@ -371,6 +428,12 @@ function resetWizard() {
 
   const btnImport = getEl('btn-import');
   if (btnImport) btnImport.disabled = true;
+
+  const loadBtn = getEl('btn-load-projects');
+  if (loadBtn) {
+    loadBtn.disabled = false;
+    loadBtn.textContent = LABEL_LOAD_PROJECTS;
+  }
 }
 
 async function onSelectFile() {
@@ -488,5 +551,12 @@ if (btnSettingsSave) {
   });
 }
 if (btnLoadProjects) btnLoadProjects.addEventListener('click', onLoadProjects);
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && isSettingsModalOpen()) {
+    e.preventDefault();
+    closeSettingsModal();
+  }
+});
 
 initSettingsFields();

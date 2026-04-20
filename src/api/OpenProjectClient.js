@@ -23,9 +23,29 @@ class OpenProjectClient {
   }
 
   async getProjects() {
-    const res = await this.http.get('/projects', { params: { pageSize: 100 } });
-    const elements = (res.data && res.data._embedded && res.data._embedded.elements) || [];
-    return elements.map((p) => ({ id: p.id, name: p.name }));
+    try {
+      const res = await this.http.get('/projects', { params: { pageSize: 100 } });
+      const status = res.status;
+      if (typeof status === 'number' && status >= 400) {
+        throw new Error(`Projekte konnten nicht geladen werden (Status ${status})`);
+      }
+      const elements = (res.data && res.data._embedded && res.data._embedded.elements) || [];
+      return elements.map((p) => ({ id: p.id, name: p.name }));
+    } catch (err) {
+      if (err.response && typeof err.response.status === 'number') {
+        throw new Error(`Projekte konnten nicht geladen werden (Status ${err.response.status})`);
+      }
+      if (
+        err.code === 'ECONNABORTED'
+        || err.code === 'ENOTFOUND'
+        || err.code === 'ECONNREFUSED'
+        || err.code === 'ETIMEDOUT'
+        || err.message === 'Network Error'
+      ) {
+        throw new Error('Netzwerkfehler beim Laden der Projekte');
+      }
+      throw err;
+    }
   }
 
   async getWorkPackageForm(projectId) {

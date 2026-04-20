@@ -67,12 +67,14 @@ class Importer {
         try {
           typeHref = await this.client.resolveTypeHref(String(projectId), wp.type);
         } catch (err) {
-          this.log.push({
+          const entry = {
             action: 'ERROR',
             title: wp.title,
             sourceRow: wp._sourceRow,
             error: `Typ konnte nicht aufgelöst werden: ${err.message}`,
-          });
+          };
+          if (wp._debugDate) entry.debug = wp._debugDate;
+          this.log.push(entry);
           continue;
         }
       }
@@ -107,12 +109,14 @@ class Importer {
           sourceRow: wp._sourceRow,
         });
       } catch (err) {
-        this.log.push({
+        const entry = {
           action: 'ERROR',
           title: wp.title,
           sourceRow: wp._sourceRow,
           error: err.message,
-        });
+        };
+        if (wp._debugDate) entry.debug = wp._debugDate;
+        this.log.push(entry);
       }
     }
   }
@@ -124,13 +128,15 @@ class Importer {
         try {
           typeHref = await this.client.resolveTypeHref(this._currentProjectId, wp.type);
         } catch (err) {
-          this.log.push({
+          const entry = {
             action: 'ERROR',
             title: wp.title,
             id: wp.openproject_id,
             sourceRow: wp._sourceRow,
             error: `Typ konnte nicht aufgelöst werden: ${err.message}`,
-          });
+          };
+          if (wp._debugDate) entry.debug = wp._debugDate;
+          this.log.push(entry);
           continue;
         }
       }
@@ -157,13 +163,15 @@ class Importer {
           sourceRow: wp._sourceRow,
         });
       } catch (err) {
-        this.log.push({
+        const entry = {
           action: 'ERROR',
           title: wp.title,
           id: wp.openproject_id,
           sourceRow: wp._sourceRow,
           error: err.message,
-        });
+        };
+        if (wp._debugDate) entry.debug = wp._debugDate;
+        this.log.push(entry);
       }
     }
   }

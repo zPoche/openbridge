@@ -14,10 +14,10 @@
       <p>Gantt-Pläne in OpenProject importieren</p>
     </header>
 
-    <div id="modal-settings" class="modal-root hidden" aria-hidden="true">
+    <div id="modal-settings" class="modal-root hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-hidden="true">
       <div class="modal-backdrop" id="modal-settings-backdrop"></div>
-      <div class="modal-dialog" role="dialog" aria-labelledby="modal-settings-title">
-        <h3 id="modal-settings-title">OpenProject</h3>
+      <div class="modal-dialog">
+        <h2 id="settings-title">Einstellungen</h2>
         <label>OpenProject URL
           <input type="text" id="settings-url" placeholder="https://openproject.example.com" autocomplete="url">
         </label>
@@ -28,6 +28,7 @@
           <button type="button" id="btn-settings-save">Speichern</button>
           <button type="button" id="btn-settings-close">Schließen</button>
         </div>
+        <p id="settings-error" class="settings-error hidden" role="alert"></p>
       </div>
     </div>
 
