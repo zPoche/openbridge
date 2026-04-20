@@ -189,7 +189,32 @@ function mapRowsToWorkPackages(rows, mapping) {
   return { workPackages, skippedRows };
 }
 
-async function runPipeline({ filePath, mapping, projectId }, { dryRun, client }) {
+async function runPipeline(payloadIn = {}, { dryRun, client }) {
+  const filePath = payloadIn.filePath;
+  const mappingRaw = payloadIn.mapping;
+  const projectId = payloadIn.projectId;
+
+  if (!filePath || typeof filePath !== 'string' || !String(filePath).trim()) {
+    return {
+      success: false,
+      log: [],
+      errors: [{ ref: 'Datei', message: 'Kein Dateipfad.' }],
+      warnings: [],
+    };
+  }
+  const ext = path.extname(String(filePath).trim()).toLowerCase();
+  if (ext !== '.csv' && ext !== '.xlsx' && ext !== '.xls') {
+    return {
+      success: false,
+      log: [],
+      errors: [{ ref: 'Datei', message: 'Kein Dateipfad.' }],
+      warnings: [],
+    };
+  }
+
+  const mapping =
+    mappingRaw && typeof mappingRaw === 'object' && !Array.isArray(mappingRaw) ? mappingRaw : {};
+
   try {
     const adapter = createAdapterForPath(filePath);
     const rows = await adapter.parse(filePath);
@@ -288,6 +313,7 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'ui', 'preload.js'),
       contextIsolation: true,
+      nodeIntegration: false,
     },
     titleBarStyle: 'default',
     title: 'openbridge',
@@ -361,10 +387,12 @@ ipcMain.handle('get-projects', async () => {
 });
 
 ipcMain.handle('dry-run', async (_event, payload) => {
-  return runPipeline(payload, { dryRun: true, client: null });
+  const p = (payload && typeof payload === 'object') ? payload : {};
+  return runPipeline(p, { dryRun: true, client: null });
 });
 
 ipcMain.handle('import-file', async (_event, payload) => {
+  const p = (payload && typeof payload === 'object') ? payload : {};
   const data = await loadSettingsData();
   if (data.error) {
     return {
@@ -391,7 +419,7 @@ ipcMain.handle('import-file', async (_event, payload) => {
     };
   }
 
-  const rawPid = payload && payload.projectId != null ? String(payload.projectId).trim() : '';
+  const rawPid = p && p.projectId != null ? String(p.projectId).trim() : '';
   if (!rawPid) {
     return {
       success: false,
@@ -403,7 +431,7 @@ ipcMain.handle('import-file', async (_event, payload) => {
 
   try {
     const client = new OpenProjectClient(baseUrl, apiKey);
-    return runPipeline(payload, { dryRun: false, client });
+    return runPipeline(p, { dryRun: false, client });
   } catch (err) {
     return {
       success: false,

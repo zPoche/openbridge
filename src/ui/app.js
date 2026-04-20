@@ -282,6 +282,10 @@ function openSettingsModal() {
   if (!root) return;
   root.classList.remove('hidden');
   root.setAttribute('aria-hidden', 'false');
+  const urlInput = getEl('settings-url');
+  if (urlInput && typeof urlInput.focus === 'function') {
+    urlInput.focus();
+  }
 }
 
 function closeSettingsModal() {
@@ -290,6 +294,10 @@ function closeSettingsModal() {
   if (!root) return;
   root.classList.add('hidden');
   root.setAttribute('aria-hidden', 'true');
+  const gear = getEl('btn-settings');
+  if (gear && typeof gear.focus === 'function') {
+    gear.focus();
+  }
 }
 
 async function initSettingsFields() {
@@ -379,9 +387,12 @@ async function onLoadProjects() {
     }
 
     if (status) {
-      status.classList.remove('error', 'neutral');
+      status.classList.remove('error', 'success', 'neutral');
       if (result.length === 0) {
         status.textContent = 'Keine Projekte gefunden';
+        status.classList.add('neutral');
+      } else if (result.length === 500) {
+        status.textContent = 'Projekte geladen (max. 500 angezeigt – ggf. Pagination nötig)';
         status.classList.add('neutral');
       } else {
         status.textContent = 'Projekte geladen';
@@ -442,32 +453,42 @@ async function onSelectFile() {
 
   await withBusy(btn, 'Lädt…', async () => {
     showValidationMessage('', false);
-    const filePath = await window.bridge.openFile();
-    if (!filePath) return;
+    try {
+      const filePath = await window.bridge.openFile();
+      if (!filePath) return;
 
-    const colResult = await window.bridge.getColumns({ filePath });
-    if (colResult.error) {
+      const colResult = await window.bridge.getColumns({ filePath });
+      if (colResult.error) {
+        const sf = getEl('selected-file');
+        if (sf) sf.textContent = '';
+        showValidationMessage(`Spalten konnten nicht gelesen werden: ${colResult.error}`, true);
+        setSectionHidden('step-mapping', true);
+        return;
+      }
+
+      currentFilePath = filePath;
+      currentColumns = colResult.columns || [];
+      currentRowCount = colResult.rowCount || 0;
+      currentMapping = {};
+      lastDryRunResult = null;
+
+      const selected = getEl('selected-file');
+      if (selected) {
+        selected.textContent = `Ausgewählt: ${filePath} (${currentRowCount} Zeilen)`;
+      }
+      renderMappingTable();
+      setSectionHidden('step-mapping', false);
+      setSectionHidden('step-preview', true);
+      setSectionHidden('step-log', true);
+      const btnImport = getEl('btn-import');
+      if (btnImport) btnImport.disabled = true;
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      showValidationMessage(`Datei konnte nicht gelesen werden: ${msg}`, true);
       const sf = getEl('selected-file');
       if (sf) sf.textContent = '';
-      showValidationMessage(`Spalten konnten nicht gelesen werden: ${colResult.error}`, true);
       setSectionHidden('step-mapping', true);
-      return;
     }
-
-    currentFilePath = filePath;
-    currentColumns = colResult.columns || [];
-    currentRowCount = colResult.rowCount || 0;
-    currentMapping = {};
-    lastDryRunResult = null;
-
-    const selected = getEl('selected-file');
-    if (selected) selected.textContent = `Ausgewählt: ${filePath}`;
-    renderMappingTable();
-    setSectionHidden('step-mapping', false);
-    setSectionHidden('step-preview', true);
-    setSectionHidden('step-log', true);
-    const btnImport = getEl('btn-import');
-    if (btnImport) btnImport.disabled = true;
   });
 }
 
@@ -480,11 +501,19 @@ async function onValidate() {
     collectMappingFromDom();
 
     const projectId = getProjectId();
-    const result = await window.bridge.dryRun({
-      filePath: currentFilePath,
-      mapping: currentMapping,
-      projectId,
-    });
+    let result;
+    try {
+      result = await window.bridge.dryRun({
+        filePath: currentFilePath,
+        mapping: currentMapping,
+        projectId,
+      });
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      showValidationMessage(`Validierung fehlgeschlagen: ${msg}`, true);
+      lastDryRunResult = null;
+      return;
+    }
 
     lastDryRunResult = result;
     setSectionHidden('step-preview', false);
@@ -503,22 +532,34 @@ async function onImport() {
   const btn = getEl('btn-import');
   if (!btn || !currentFilePath) return;
 
+  if (!lastDryRunResult || lastDryRunResult.success !== true) {
+    showValidationMessage('Bitte zuerst Validierung erfolgreich durchführen.', true);
+    return;
+  }
+
   await withBusy(btn, 'Lädt…', async () => {
     showValidationMessage('', false);
     collectMappingFromDom();
     const projectId = getProjectId();
 
-    const result = await window.bridge.importFile({
-      filePath: currentFilePath,
-      mapping: currentMapping,
-      projectId,
-    });
+    try {
+      const result = await window.bridge.importFile({
+        filePath: currentFilePath,
+        mapping: currentMapping,
+        projectId,
+      });
 
-    setSectionHidden('step-log', false);
-    renderImportLog(result);
+      setSectionHidden('step-log', false);
+      renderImportLog(result);
 
-    if (!result.success) {
-      showValidationMessage('Import mit Fehlern beendet. Siehe Log.', true);
+      if (!result.success) {
+        showValidationMessage('Import mit Fehlern beendet. Siehe Log.', true);
+      } else {
+        lastDryRunResult = null;
+      }
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      showValidationMessage(`Import fehlgeschlagen: ${msg}`, true);
     }
   });
 }

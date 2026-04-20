@@ -37,6 +37,17 @@ class Importer {
     await this._importPass(topLevel, projectId);
 
     const children = workPackages.filter((wp) => wp.parent_local_id && !wp.openproject_id);
+    for (const wp of children) {
+      const pid = wp.parent_local_id;
+      if (pid != null && String(pid).trim() !== '' && !this.registry.has(pid)) {
+        this.log.push({
+          action: 'WARN',
+          title: wp.title,
+          sourceRow: wp._sourceRow,
+          message: `Parent-ID „${String(pid)}“ nicht gefunden – Paket wird ohne Parent erstellt.`,
+        });
+      }
+    }
     await this._importPass(children, projectId);
 
     const updates = workPackages.filter((wp) => wp.openproject_id);
@@ -59,6 +70,12 @@ class Importer {
     };
   }
 
+  /**
+   * Legt Arbeitspakete in der Reihenfolge von workPackages an (oder Dry-Run-Log).
+   * Voraussetzung für korrekte Parent-Links: Zeilen mit parent_local_id sollten nach der
+   * Zeile ihres Elternteils stehen, wenn beide noch keine openproject_id haben; sonst fehlt
+   * der Parent-Link bis der Eltern-Datensatz verarbeitet wurde (siehe WARN-Log vor dem Children-Pass).
+   */
   async _importPass(workPackages, projectId) {
     for (const wp of workPackages) {
       const parentId = this.registry.resolve(wp.parent_local_id);
