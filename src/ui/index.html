@@ -62,6 +62,10 @@
           <span id="projects-status"></span>
         </div>
         <button id="btn-validate">Validieren & Vorschau</button>
+        <div id="progress-block-validate" class="import-progress hidden" aria-live="polite">
+          <div class="progress-track"><div class="progress-fill" data-progress-fill></div></div>
+          <p class="progress-status" data-progress-status></p>
+        </div>
       </section>
 
       <!-- Step 3: Preview / Dry-Run -->
@@ -71,12 +75,19 @@
         <div id="preview-table"></div>
         <div id="validation-errors" class="hidden"></div>
         <button id="btn-import" class="primary" disabled>Jetzt importieren</button>
+        <div id="progress-block-import" class="import-progress hidden" aria-live="polite">
+          <div class="progress-track"><div class="progress-fill" data-progress-fill></div></div>
+          <p class="progress-status" data-progress-status></p>
+        </div>
+        <p id="export-feedback" class="export-feedback hidden" role="status"></p>
+        <button type="button" id="btn-export" class="secondary" disabled>Exportieren…</button>
       </section>
 
       <!-- Step 4: Import Log -->
       <section id="step-log" class="hidden">
         <h2>4. Import-Log</h2>
         <div id="import-log"></div>
+        <button type="button" id="btn-export-log" class="secondary" disabled>Exportieren…</button>
         <button type="button" id="btn-new-import">Neuer Import</button>
       </section>
     </main>

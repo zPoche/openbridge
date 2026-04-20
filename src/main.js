@@ -243,12 +243,27 @@ function mapRowsToWorkPackages(rows, mapping) {
   return { workPackages, skippedRows };
 }
 
-async function runPipeline(payloadIn = {}, { dryRun, client }) {
+async function yieldEventLoop() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function runPipeline(payloadIn = {}, { dryRun, client, onProgress }) {
+  const notify = (p) => {
+    if (typeof onProgress === 'function') {
+      try {
+        onProgress(p);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  };
+
   const filePath = payloadIn.filePath;
   const mappingRaw = payloadIn.mapping;
   const projectId = payloadIn.projectId;
 
   if (!filePath || typeof filePath !== 'string' || !String(filePath).trim()) {
+    notify({ phase: 'error', current: 0, total: 0, message: 'Kein Dateipfad.' });
     return {
       success: false,
       log: [],
@@ -258,6 +273,7 @@ async function runPipeline(payloadIn = {}, { dryRun, client }) {
   }
   const ext = path.extname(String(filePath).trim()).toLowerCase();
   if (ext !== '.csv' && ext !== '.xlsx' && ext !== '.xls') {
+    notify({ phase: 'error', current: 0, total: 0, message: 'Dateityp wird nicht unterstützt.' });
     return {
       success: false,
       log: [],
@@ -270,9 +286,14 @@ async function runPipeline(payloadIn = {}, { dryRun, client }) {
     mappingRaw && typeof mappingRaw === 'object' && !Array.isArray(mappingRaw) ? mappingRaw : {};
 
   try {
+    notify({ phase: 'reading-file', current: 0, total: null });
     const adapter = createAdapterForPath(filePath);
     const rows = await adapter.parse(filePath);
+    notify({ phase: 'reading-file', current: rows.length, total: rows.length });
+    await yieldEventLoop();
+
     const { workPackages, skippedRows } = mapRowsToWorkPackages(rows, mapping);
+    await yieldEventLoop();
 
     if (workPackages.length === 0) {
       const warnings = [];
@@ -283,6 +304,13 @@ async function runPipeline(payloadIn = {}, { dryRun, client }) {
           message: `${skippedRows} Zeile(n) ohne Titel wurden beim Einlesen übersprungen.`,
         });
       }
+      notify({
+        phase: 'error',
+        current: 0,
+        total: 0,
+        message:
+          'Keine importierbaren Zeilen. Bitte die Spalte „Thema (title)“ zuordnen oder prüfen, ob die Datei gültige Daten enthält.',
+      });
       return {
         success: false,
         log: [],
@@ -297,8 +325,22 @@ async function runPipeline(payloadIn = {}, { dryRun, client }) {
       };
     }
 
-    const importer = new Importer(client, { dryRun });
+    const importer = new Importer(client, { dryRun, onProgress: notify });
     const result = await importer.run(workPackages, projectId);
+
+    const validationOnlyFailure =
+      !result.success &&
+      (!result.log || result.log.length === 0) &&
+      result.errors &&
+      result.errors.length > 0;
+    if (!validationOnlyFailure) {
+      const finishedMsg = dryRun
+        ? (result.success ? 'Dry-Run abgeschlossen' : 'Dry-Run beendet (mit Fehlern)')
+        : result.success
+          ? 'Import abgeschlossen'
+          : 'Import beendet (mit Fehlern)';
+      notify({ phase: 'finished', current: 1, total: 1, message: finishedMsg });
+    }
 
     const extraWarnings = [];
     if (skippedRows > 0) {
@@ -316,6 +358,7 @@ async function runPipeline(payloadIn = {}, { dryRun, client }) {
       warnings: [...(result.warnings || []), ...extraWarnings],
     };
   } catch (err) {
+    notify({ phase: 'error', current: 0, total: 0, message: err.message || String(err) });
     return {
       success: false,
       log: [],
@@ -323,6 +366,51 @@ async function runPipeline(payloadIn = {}, { dryRun, client }) {
       warnings: [],
     };
   }
+}
+
+function escapeCsvField(value) {
+  const s = value === undefined || value === null ? '' : String(value);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function resultToCsvRows(result) {
+  const rows = [];
+  for (const e of result.log || []) {
+    rows.push({
+      action: e.action || '',
+      title: e.title || '',
+      id: e.id != null ? String(e.id) : '',
+      source_row: e.sourceRow != null ? String(e.sourceRow) : '',
+      parent_local_id: e.parent_local_id != null ? String(e.parent_local_id) : '',
+      start_date: '',
+      end_date: '',
+      error: e.error || '',
+      message: e.message || '',
+    });
+  }
+  for (const err of result.errors || []) {
+    rows.push({
+      action: 'CONFIG_ERROR',
+      title: err.ref || '',
+      id: '',
+      source_row: err.rowIndex != null ? String(err.rowIndex) : '',
+      parent_local_id: '',
+      start_date: '',
+      end_date: '',
+      error: err.message || '',
+      message: '',
+    });
+  }
+  return rows;
+}
+
+function buildCsvFromRows(flatRows) {
+  if (!flatRows.length) return 'action,title,id,source_row,parent_local_id,start_date,end_date,error,message\n';
+  const keys = Object.keys(flatRows[0]);
+  const header = keys.join(',');
+  const lines = flatRows.map((r) => keys.map((k) => escapeCsvField(r[k])).join(','));
+  return `${header}\n${lines.join('\n')}\n`;
 }
 
 function settingsFilePath() {
@@ -517,15 +605,30 @@ ipcMain.handle('get-projects', async () => {
   }
 });
 
-ipcMain.handle('dry-run', async (_event, payload) => {
-  const p = (payload && typeof payload === 'object') ? payload : {};
-  return runPipeline(p, { dryRun: true, client: null });
+function sendImportProgress(sender, data) {
+  try {
+    if (sender && !sender.isDestroyed()) sender.send('import-progress', data);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+ipcMain.handle('dry-run', async (event, payload) => {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const sender = event.sender;
+  return runPipeline(p, {
+    dryRun: true,
+    client: null,
+    onProgress: (d) => sendImportProgress(sender, d),
+  });
 });
 
-ipcMain.handle('import-file', async (_event, payload) => {
-  const p = (payload && typeof payload === 'object') ? payload : {};
+ipcMain.handle('import-file', async (event, payload) => {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const sender = event.sender;
   const data = await loadSettingsData();
   if (data.error) {
+    sendImportProgress(sender, { phase: 'error', current: 0, total: 0, message: data.error });
     return {
       success: false,
       log: [],
@@ -536,6 +639,12 @@ ipcMain.handle('import-file', async (_event, payload) => {
   const baseUrl = data.url;
   const apiKey = data.apiKey;
   if (!baseUrl || !apiKey) {
+    sendImportProgress(sender, {
+      phase: 'error',
+      current: 0,
+      total: 0,
+      message: 'OpenProject URL und API-Key fehlen.',
+    });
     return {
       success: false,
       log: [],
@@ -552,6 +661,12 @@ ipcMain.handle('import-file', async (_event, payload) => {
 
   const rawPid = p && p.projectId != null ? String(p.projectId).trim() : '';
   if (!rawPid) {
+    sendImportProgress(sender, {
+      phase: 'error',
+      current: 0,
+      total: 0,
+      message: 'Bitte eine gültige OpenProject-Projekt-ID angeben.',
+    });
     return {
       success: false,
       log: [],
@@ -562,13 +677,40 @@ ipcMain.handle('import-file', async (_event, payload) => {
 
   try {
     const client = new OpenProjectClient(baseUrl, apiKey);
-    return runPipeline(p, { dryRun: false, client });
+    return runPipeline(p, {
+      dryRun: false,
+      client,
+      onProgress: (d) => sendImportProgress(sender, d),
+    });
   } catch (err) {
+    sendImportProgress(sender, { phase: 'error', current: 0, total: 0, message: err.message || String(err) });
     return {
       success: false,
       log: [],
       errors: [{ ref: 'API', message: err.message || String(err) }],
       warnings: [],
     };
+  }
+});
+
+ipcMain.handle('export-result', async (event, payload) => {
+  const kind = payload && payload.kind != null ? String(payload.kind) : 'export';
+  const result = payload && payload.result;
+  if (!result || typeof result !== 'object') {
+    return { error: 'Keine Daten zum Exportieren.' };
+  }
+  const flat = resultToCsvRows(result);
+  const csv = buildCsvFromRows(flat);
+  const { canceled, filePath } = await dialog.showSaveDialog(event.sender, {
+    title: 'Export speichern',
+    defaultPath: `openbridge-${kind}.csv`,
+    filters: [{ name: 'CSV', extensions: ['csv'] }],
+  });
+  if (canceled || !filePath) return { canceled: true };
+  try {
+    await fs.writeFile(filePath, csv, 'utf8');
+    return { success: true, path: filePath };
+  } catch (e) {
+    return { error: e.message || String(e) };
   }
 });

@@ -200,3 +200,67 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 #btn-new-import { margin-top: 0.5rem; }
 
 #preview-summary { font-weight: 600; margin-bottom: 0.5rem; }
+
+button.secondary {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-color: var(--color-border);
+  margin-top: 0.5rem;
+}
+button.secondary:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.import-progress {
+  margin-top: 0.75rem;
+  max-width: 36rem;
+}
+.import-progress.hidden {
+  display: none;
+}
+.progress-track {
+  height: 10px;
+  background: #e8e6e0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.progress-track.progress-error .progress-fill {
+  background: var(--color-error);
+}
+.progress-track.progress-indeterminate .progress-fill {
+  width: 35%;
+  animation: progress-indet 1.2s ease-in-out infinite alternate;
+}
+@keyframes progress-indet {
+  from { transform: translateX(0); }
+  to { transform: translateX(180%); }
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--color-primary);
+  transition: width 0.15s ease-out;
+}
+.progress-status {
+  margin-top: 0.35rem;
+  font-size: 0.88rem;
+  color: var(--color-text-muted);
+}
+.export-feedback {
+  margin-top: 0.5rem;
+  font-size: 0.88rem;
+}
+.export-feedback.hidden {
+  display: none;
+}
+.export-feedback.ok {
+  color: var(--color-success);
+}
+.export-feedback.bad {
+  color: var(--color-error);
+}
+
+#btn-export-log {
+  margin-right: 0.5rem;
+}

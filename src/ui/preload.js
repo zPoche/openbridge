@@ -8,4 +8,11 @@ contextBridge.exposeInMainWorld('bridge', {
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   loadSettings: () => ipcRenderer.invoke('load-settings'),
   getProjects: () => ipcRenderer.invoke('get-projects'),
+  exportResult: (payload) => ipcRenderer.invoke('export-result', payload),
+  onImportProgress: (handler) => {
+    if (typeof handler !== 'function') return;
+    ipcRenderer.on('import-progress', (_event, data) => {
+      handler(data);
+    });
+  },
 });

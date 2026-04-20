@@ -20,6 +20,158 @@ let currentMapping = {};
 let currentRowCount = 0;
 /** @type {null | { success: boolean, log: any[], errors: any[], warnings: any[] }} */
 let lastDryRunResult = null;
+/** @type {null | { success: boolean, log: any[], errors: any[], warnings: any[] }} */
+let lastImportResult = null;
+
+const PHASE_LABELS = {
+  'reading-file': 'Lese Datei…',
+  validating: 'Validiere…',
+  'pass-1-parents': 'Pass 1: Eltern …',
+  'pass-2-children': 'Pass 2: Kinder …',
+  'pass-3-patch': 'Pass 3: Aktualisierungen …',
+  finished: 'Abgeschlossen',
+  error: 'Fehler',
+};
+
+let progressClearTimer = null;
+
+function showProgressBlocks() {
+  document.querySelectorAll('.import-progress').forEach((el) => {
+    el.classList.remove('hidden');
+  });
+}
+
+function clearProgress() {
+  if (progressClearTimer) {
+    clearTimeout(progressClearTimer);
+    progressClearTimer = null;
+  }
+  document.querySelectorAll('.import-progress').forEach((root) => {
+    root.classList.add('hidden');
+    const track = root.querySelector('.progress-track');
+    const fill = root.querySelector('[data-progress-fill]');
+    const status = root.querySelector('[data-progress-status]');
+    if (track) {
+      track.classList.remove('progress-error', 'progress-indeterminate');
+    }
+    if (fill) {
+      fill.style.width = '0%';
+      fill.classList.remove('indeterminate');
+    }
+    if (status) status.textContent = '';
+  });
+}
+
+function setProgress(payload) {
+  const phase = payload && payload.phase;
+  const current = payload && payload.current;
+  const total = payload && payload.total;
+  const message = payload && payload.message;
+
+  const label = (phase && PHASE_LABELS[phase]) || phase || '…';
+  let pctStr = 'unbekannt';
+  let pct = 0;
+  let indeterminate = false;
+
+  if (phase === 'finished') {
+    pct = 100;
+    pctStr = '100%';
+  } else if (phase === 'error') {
+    pct = 100;
+    pctStr = '—';
+  } else if (total != null && Number(total) > 0 && current != null && Number.isFinite(Number(current))) {
+    pct = Math.min(100, Math.max(0, Math.round((Number(current) / Number(total)) * 100)));
+    pctStr = `${pct}%`;
+  } else if (phase === 'reading-file' && total == null) {
+    indeterminate = true;
+    if (current != null && Number(current) > 0) {
+      pctStr = `${current} Zeilen gelesen`;
+    } else {
+      pctStr = 'unbekannt';
+    }
+  }
+
+  let statusText = `${label} (${pctStr})`;
+  if (phase === 'error' && message) statusText = `Fehler: ${message}`;
+  else if (phase === 'finished' && message) statusText = message;
+
+  document.querySelectorAll('.import-progress').forEach((root) => {
+    root.classList.remove('hidden');
+    const track = root.querySelector('.progress-track');
+    const fill = root.querySelector('[data-progress-fill]');
+    const status = root.querySelector('[data-progress-status]');
+    if (track) {
+      track.classList.remove('progress-error', 'progress-indeterminate');
+      if (phase === 'error') track.classList.add('progress-error');
+      else if (indeterminate) track.classList.add('progress-indeterminate');
+    }
+    if (fill) {
+      fill.classList.toggle('indeterminate', indeterminate && phase !== 'error');
+      if (indeterminate && phase !== 'error') {
+        fill.style.width = '';
+      } else {
+        fill.style.width = `${pct}%`;
+      }
+    }
+    if (status) status.textContent = statusText;
+  });
+
+  if (progressClearTimer) {
+    clearTimeout(progressClearTimer);
+    progressClearTimer = null;
+  }
+  if (phase === 'finished') {
+    progressClearTimer = setTimeout(() => {
+      clearProgress();
+    }, 2000);
+  }
+}
+
+function updateExportButtonState() {
+  const can = lastDryRunResult != null || lastImportResult != null;
+  ['btn-export', 'btn-export-log'].forEach((id) => {
+    const b = getEl(id);
+    if (b) b.disabled = !can;
+  });
+}
+
+function setExportFeedback(text, variant) {
+  const el = getEl('export-feedback');
+  if (!el) return;
+  if (!text) {
+    el.textContent = '';
+    el.classList.add('hidden');
+    el.classList.remove('ok', 'bad');
+    return;
+  }
+  el.textContent = text;
+  el.classList.remove('hidden', 'ok', 'bad');
+  if (variant === 'ok') el.classList.add('ok');
+  if (variant === 'bad') el.classList.add('bad');
+}
+
+async function onExport() {
+  const result = lastImportResult || lastDryRunResult;
+  if (!result) return;
+  const kind = lastImportResult ? 'import' : 'dry-run';
+  setExportFeedback('', null);
+  try {
+    const r = await window.bridge.exportResult({ kind, result });
+    if (r && r.canceled) return;
+    if (r && r.error) {
+      setExportFeedback(`Export fehlgeschlagen: ${r.error}`, 'bad');
+      return;
+    }
+    if (r && r.success && r.path) {
+      setExportFeedback(`Gespeichert: ${r.path}`, 'ok');
+    } else {
+      setExportFeedback('Export abgeschlossen.', 'ok');
+    }
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    setExportFeedback(`Export fehlgeschlagen: ${msg}`, 'bad');
+  }
+}
 
 function escapeHtml(text) {
   return String(text)
@@ -187,6 +339,7 @@ function renderPreview(result) {
 
     tableWrap.innerHTML = `<table class="data-table"><thead><tr><th>#</th><th>Titel</th><th>Aktion</th><th>Start</th><th>Ende</th><th>Parent</th><th>Fehler/Warnung</th></tr></thead><tbody>${errRows.join('') || '<tr><td colspan="7">Keine Details.</td></tr>'}</tbody></table>`;
     btnImport.disabled = true;
+    updateExportButtonState();
     return;
   }
 
@@ -220,6 +373,7 @@ function renderPreview(result) {
   tableWrap.innerHTML = `<table class="data-table"><thead><tr><th>#</th><th>Titel</th><th>Aktion</th><th>Start</th><th>Ende</th><th>Parent</th><th>Fehler/Warnung</th></tr></thead><tbody>${body || '<tr><td colspan="7">Keine Vorschau-Einträge.</td></tr>'}</tbody></table>`;
 
   btnImport.disabled = (result.errors && result.errors.length > 0) || f > 0;
+  updateExportButtonState();
 }
 
 function renderImportLog(result) {
@@ -229,6 +383,7 @@ function renderImportLog(result) {
   if (!result.success && (!result.log || !result.log.length)) {
     const errs = (result.errors || []).map((e) => `<div class="log-entry bad">${escapeHtml(e.ref || '')}: ${escapeHtml(e.message || '')}</div>`).join('');
     wrap.innerHTML = errs || '<div class="log-entry bad">Import fehlgeschlagen.</div>';
+    updateExportButtonState();
     return;
   }
 
@@ -250,6 +405,7 @@ function renderImportLog(result) {
     : '';
 
   wrap.innerHTML = errBanner + lines.join('');
+  updateExportButtonState();
 }
 
 async function withBusy(button, busyText, fn) {
@@ -420,6 +576,9 @@ function resetWizard() {
   currentMapping = {};
   currentRowCount = 0;
   lastDryRunResult = null;
+  lastImportResult = null;
+  clearProgress();
+  setExportFeedback('', null);
 
   const sel = getEl('selected-file');
   if (sel) sel.textContent = '';
@@ -441,6 +600,8 @@ function resetWizard() {
 
   const btnImport = getEl('btn-import');
   if (btnImport) btnImport.disabled = true;
+
+  updateExportButtonState();
 
   const loadBtn = getEl('btn-load-projects');
   if (loadBtn) {
@@ -498,7 +659,10 @@ async function onValidate() {
   const btn = getEl('btn-validate');
   if (!btn || !currentFilePath) return;
 
-  await withBusy(btn, 'Lädt…', async () => {
+  clearProgress();
+  showProgressBlocks();
+
+  await withBusy(btn, 'Dry-Run läuft…', async () => {
     showValidationMessage('', false);
     collectMappingFromDom();
 
@@ -514,6 +678,7 @@ async function onValidate() {
       const msg = err && err.message ? err.message : String(err);
       showValidationMessage(`Validierung fehlgeschlagen: ${msg}`, true);
       lastDryRunResult = null;
+      clearProgress();
       return;
     }
 
@@ -539,7 +704,10 @@ async function onImport() {
     return;
   }
 
-  await withBusy(btn, 'Lädt…', async () => {
+  clearProgress();
+  showProgressBlocks();
+
+  await withBusy(btn, 'Import läuft…', async () => {
     showValidationMessage('', false);
     collectMappingFromDom();
     const projectId = getProjectId();
@@ -550,6 +718,8 @@ async function onImport() {
         mapping: currentMapping,
         projectId,
       });
+
+      lastImportResult = result;
 
       setSectionHidden('step-log', false);
       renderImportLog(result);
@@ -562,6 +732,7 @@ async function onImport() {
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
       showValidationMessage(`Import fehlgeschlagen: ${msg}`, true);
+      clearProgress();
     }
   });
 }
@@ -595,6 +766,17 @@ if (btnSettingsSave) {
 }
 if (btnLoadProjects) btnLoadProjects.addEventListener('click', onLoadProjects);
 
+const btnExport = getEl('btn-export');
+const btnExportLog = getEl('btn-export-log');
+if (btnExport) btnExport.addEventListener('click', () => onExport());
+if (btnExportLog) btnExportLog.addEventListener('click', () => onExport());
+
+if (window.bridge && typeof window.bridge.onImportProgress === 'function') {
+  window.bridge.onImportProgress((payload) => {
+    setProgress(payload);
+  });
+}
+
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && isSettingsModalOpen()) {
     e.preventDefault();
@@ -603,3 +785,4 @@ document.addEventListener('keydown', (e) => {
 });
 
 initSettingsFields();
+updateExportButtonState();
