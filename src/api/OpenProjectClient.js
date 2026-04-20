@@ -19,6 +19,7 @@ class OpenProjectClient {
       baseURL: `${this.baseUrl}/api/v3`,
       auth: { username: 'apikey', password: apiKey },
       headers: { 'Content-Type': 'application/json' },
+      timeout: 120000,
     });
   }
 
