@@ -19,7 +19,7 @@ class BaseAdapter {
     parent_local_id = null,
     openproject_id = null,
     title = '',
-    type = 'Task',
+    type = null,
     status = null,
     start_date = null,
     end_date = null,

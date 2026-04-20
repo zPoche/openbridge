@@ -1,12 +1,368 @@
-// openbridge UI logic
-// Full implementation to be built with Cursor
+// openbridge UI — IPC ausschließlich über window.bridge
 
-document.getElementById('btn-select-file').addEventListener('click', async () => {
-  const filePath = await window.bridge.openFile();
-  if (filePath) {
-    document.getElementById('selected-file').textContent = `Ausgewählt: ${filePath}`;
-    document.getElementById('step-mapping').classList.remove('hidden');
+const TARGET_FIELDS = [
+  { id: 'title', label: 'Thema (title)' },
+  { id: 'start_date', label: 'Startdatum (start_date)' },
+  { id: 'end_date', label: 'Enddatum (end_date)' },
+  { id: 'parent_local_id', label: 'Eltern-ID lokal (parent_local_id)' },
+  { id: 'local_id', label: 'Lokale ID (local_id)' },
+  { id: 'openproject_id', label: 'OpenProject-ID (openproject_id)' },
+  { id: 'type', label: 'Typ (type)' },
+  { id: 'description', label: 'Beschreibung (description)' },
+];
+
+const UNASSIGNED_VALUE = '';
+
+let currentFilePath = null;
+let currentColumns = [];
+let currentMapping = {};
+let currentRowCount = 0;
+/** @type {null | { success: boolean, log: any[], errors: any[], warnings: any[] }} */
+let lastDryRunResult = null;
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function attrEscape(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;');
+}
+
+function getEl(id) {
+  return document.getElementById(id);
+}
+
+function setSectionHidden(id, hidden) {
+  const el = getEl(id);
+  if (!el) return;
+  if (hidden) el.classList.add('hidden');
+  else el.classList.remove('hidden');
+}
+
+function showValidationMessage(message, isError) {
+  const el = getEl('validation-errors');
+  if (!el) return;
+  if (!message) {
+    el.textContent = '';
+    el.classList.add('hidden');
+    el.classList.remove('error');
+    return;
   }
-});
+  el.textContent = message;
+  el.classList.remove('hidden');
+  if (isError) el.classList.add('error');
+  else el.classList.remove('error');
+}
 
-// TODO: column mapping, dry-run, import
+function collectMappingFromDom() {
+  const mapping = {};
+  for (const { id } of TARGET_FIELDS) {
+    const sel = document.querySelector(`select.mapping-select[data-field="${id}"]`);
+    const val = sel && sel.value ? sel.value : '';
+    mapping[id] = val;
+  }
+  currentMapping = mapping;
+  return mapping;
+}
+
+function renderMappingTable() {
+  const wrap = getEl('mapping-table');
+  if (!wrap) return;
+
+  const rows = TARGET_FIELDS.map(({ id, label }) => {
+    const previous = currentMapping[id] || '';
+    const options = [
+      `<option value="${UNASSIGNED_VALUE}"${previous === '' ? ' selected' : ''}>— nicht zuordnen —</option>`,
+    ];
+    for (const col of currentColumns) {
+      const selected = col === previous ? ' selected' : '';
+      options.push(
+        `<option value="${attrEscape(col)}"${selected}>${escapeHtml(col)}</option>`,
+      );
+    }
+    return `<tr><th><label for="map-${id}">${escapeHtml(label)}</label></th><td><select id="map-${id}" class="mapping-select" data-field="${id}">${options.join('')}</select></td></tr>`;
+  }).join('');
+
+  wrap.innerHTML = `<table class="mapping-grid"><tbody>${rows}</tbody></table>`;
+}
+
+function parseSkippedFromWarnings(warnings) {
+  for (const w of warnings || []) {
+    const m = String(w.message || '').match(/(\d+)\s+Zeile\(n\) ohne Titel/);
+    if (m) return Number.parseInt(m[1], 10) || 0;
+  }
+  return 0;
+}
+
+function summarizeDryRunLog(log) {
+  let creates = 0;
+  let updates = 0;
+  let faults = 0;
+  for (const e of log || []) {
+    if (e.action === 'CREATE (dry-run)') creates += 1;
+    else if (e.action === 'UPDATE (dry-run)') updates += 1;
+    else if (e.action === 'ERROR') faults += 1;
+  }
+  return { creates, updates, faults };
+}
+
+function parentFromPayload(payload) {
+  const href = payload && payload._links && payload._links.parent && payload._links.parent.href;
+  if (!href) return '—';
+  const m = String(href).match(/work_packages\/(\d+)/);
+  return m ? m[1] : String(href);
+}
+
+function rowWarnings(warnings, sourceRow, title) {
+  return (warnings || []).filter((w) => {
+    if (w.rowIndex != null && sourceRow != null && Number(w.rowIndex) === Number(sourceRow)) return true;
+    if (title && w.ref && String(w.ref) === String(title)) return true;
+    return false;
+  });
+}
+
+function actionLabelDryRun(action) {
+  if (action === 'CREATE (dry-run)') return 'Erstellen';
+  if (action === 'UPDATE (dry-run)') return 'Aktualisieren';
+  if (action === 'ERROR') return 'Fehler';
+  return action || '—';
+}
+
+function renderPreview(result) {
+  const summaryEl = getEl('preview-summary');
+  const tableWrap = getEl('preview-table');
+  const btnImport = getEl('btn-import');
+  if (!summaryEl || !tableWrap || !btnImport) return;
+
+  const z = parseSkippedFromWarnings(result.warnings);
+  let x = 0;
+  let y = 0;
+  let f = 0;
+
+  if (!result.success) {
+    f = (result.errors || []).length;
+    summaryEl.textContent = `${x} Erstellen, ${y} Aktualisieren, ${z} Übersprungen, ${f} Fehler`;
+
+    const errRows = (result.errors || []).map((err, idx) => {
+      const msg = escapeHtml(err.message || '');
+      const ref = escapeHtml(err.ref || '');
+      const rowIdx = err.rowIndex != null ? escapeHtml(String(err.rowIndex)) : String(idx + 1);
+      return `<tr class="row-error"><td>${rowIdx}</td><td>${ref}</td><td>Fehler</td><td>—</td><td>—</td><td>—</td><td>${msg}</td></tr>`;
+    });
+
+    tableWrap.innerHTML = `<table class="data-table"><thead><tr><th>#</th><th>Titel</th><th>Aktion</th><th>Start</th><th>Ende</th><th>Parent</th><th>Fehler/Warnung</th></tr></thead><tbody>${errRows.join('') || '<tr><td colspan="7">Keine Details.</td></tr>'}</tbody></table>`;
+    btnImport.disabled = true;
+    return;
+  }
+
+  const counts = summarizeDryRunLog(result.log);
+  x = counts.creates;
+  y = counts.updates;
+  f = counts.faults + (result.errors || []).length;
+  summaryEl.textContent = `${x} Erstellen, ${y} Aktualisieren, ${z} Übersprungen, ${f} Fehler`;
+
+  const body = (result.log || []).map((entry) => {
+    const payload = entry.payload || {};
+    const start = escapeHtml(payload.startDate || '—');
+    const end = escapeHtml(payload.dueDate || '—');
+    const parent = escapeHtml(parentFromPayload(payload));
+    const title = escapeHtml(entry.title || '—');
+    const idx = entry.sourceRow != null ? escapeHtml(String(entry.sourceRow)) : '—';
+    const act = escapeHtml(actionLabelDryRun(entry.action));
+    const warns = rowWarnings(result.warnings, entry.sourceRow, entry.title);
+    const warnText = warns.map((w) => w.message).join(' / ');
+    const extraErr = entry.error ? String(entry.error) : '';
+    const cellMsg = escapeHtml([warnText, extraErr].filter(Boolean).join(' ') || '—');
+
+    let cls = '';
+    if (entry.action === 'ERROR' || entry.error) cls = 'row-error';
+    else if (warns.length) cls = 'row-warn';
+
+    return `<tr class="${cls}"><td>${idx}</td><td>${title}</td><td>${act}</td><td>${start}</td><td>${end}</td><td>${parent}</td><td>${cellMsg}</td></tr>`;
+  }).join('');
+
+  tableWrap.innerHTML = `<table class="data-table"><thead><tr><th>#</th><th>Titel</th><th>Aktion</th><th>Start</th><th>Ende</th><th>Parent</th><th>Fehler/Warnung</th></tr></thead><tbody>${body || '<tr><td colspan="7">Keine Vorschau-Einträge.</td></tr>'}</tbody></table>`;
+
+  btnImport.disabled = (result.errors && result.errors.length > 0) || f > 0;
+}
+
+function renderImportLog(result) {
+  const wrap = getEl('import-log');
+  if (!wrap) return;
+
+  if (!result.success && (!result.log || !result.log.length)) {
+    const errs = (result.errors || []).map((e) => `<div class="log-entry bad">${escapeHtml(e.ref || '')}: ${escapeHtml(e.message || '')}</div>`).join('');
+    wrap.innerHTML = errs || '<div class="log-entry bad">Import fehlgeschlagen.</div>';
+    return;
+  }
+
+  const lines = (result.log || []).map((entry) => {
+    const parts = [`<strong>${escapeHtml(entry.action || '')}</strong>`];
+    if (entry.title) parts.push(`— ${escapeHtml(entry.title)}`);
+    if (entry.id != null) parts.push(`(ID ${escapeHtml(String(entry.id))})`);
+    if (entry.error) parts.push(`: ${escapeHtml(entry.error)}`);
+    const isErr = entry.action === 'ERROR' || !!entry.error;
+    const cls = isErr ? 'log-entry bad' : 'log-entry ok';
+    return `<div class="${cls}">${parts.join(' ')}</div>`;
+  });
+
+  const errBanner = !result.success && (result.errors || []).length
+    ? (result.errors || []).map((e) => `<div class="log-entry bad">${escapeHtml(e.message || '')}</div>`).join('')
+    : '';
+
+  wrap.innerHTML = errBanner + lines.join('');
+}
+
+async function withBusy(button, busyText, fn) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = busyText;
+  try {
+    return await fn();
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+function getProjectId() {
+  const input = getEl('project-id');
+  return input && input.value ? String(input.value).trim() : '';
+}
+
+function resetWizard() {
+  currentFilePath = null;
+  currentColumns = [];
+  currentMapping = {};
+  currentRowCount = 0;
+  lastDryRunResult = null;
+
+  const sel = getEl('selected-file');
+  if (sel) sel.textContent = '';
+  const pid = getEl('project-id');
+  if (pid) pid.value = '';
+  const map = getEl('mapping-table');
+  if (map) map.innerHTML = '';
+  const prevSum = getEl('preview-summary');
+  if (prevSum) prevSum.textContent = '';
+  const prevTbl = getEl('preview-table');
+  if (prevTbl) prevTbl.innerHTML = '';
+  const log = getEl('import-log');
+  if (log) log.innerHTML = '';
+
+  showValidationMessage('', false);
+
+  setSectionHidden('step-mapping', true);
+  setSectionHidden('step-preview', true);
+  setSectionHidden('step-log', true);
+
+  const btnImport = getEl('btn-import');
+  if (btnImport) btnImport.disabled = true;
+}
+
+async function onSelectFile() {
+  const btn = getEl('btn-select-file');
+  if (!btn) return;
+
+  await withBusy(btn, 'Lädt…', async () => {
+    showValidationMessage('', false);
+    const filePath = await window.bridge.openFile();
+    if (!filePath) return;
+
+    const colResult = await window.bridge.getColumns({ filePath });
+    if (colResult.error) {
+      const sf = getEl('selected-file');
+      if (sf) sf.textContent = '';
+      showValidationMessage(`Spalten konnten nicht gelesen werden: ${colResult.error}`, true);
+      setSectionHidden('step-mapping', true);
+      return;
+    }
+
+    currentFilePath = filePath;
+    currentColumns = colResult.columns || [];
+    currentRowCount = colResult.rowCount || 0;
+    currentMapping = {};
+    lastDryRunResult = null;
+
+    const selected = getEl('selected-file');
+    if (selected) selected.textContent = `Ausgewählt: ${filePath}`;
+    renderMappingTable();
+    setSectionHidden('step-mapping', false);
+    setSectionHidden('step-preview', true);
+    setSectionHidden('step-log', true);
+    const btnImport = getEl('btn-import');
+    if (btnImport) btnImport.disabled = true;
+  });
+}
+
+async function onValidate() {
+  const btn = getEl('btn-validate');
+  if (!btn || !currentFilePath) return;
+
+  await withBusy(btn, 'Lädt…', async () => {
+    showValidationMessage('', false);
+    collectMappingFromDom();
+
+    const projectId = getProjectId();
+    const result = await window.bridge.dryRun({
+      filePath: currentFilePath,
+      mapping: currentMapping,
+      projectId,
+    });
+
+    lastDryRunResult = result;
+    setSectionHidden('step-preview', false);
+    setSectionHidden('step-log', true);
+    renderPreview(result);
+
+    if (!result.success) {
+      showValidationMessage('Validierung fehlgeschlagen. Details siehe Tabelle.', true);
+    } else if ((result.warnings || []).length > 0) {
+      showValidationMessage('Hinweise vorhanden (siehe Spalte „Fehler/Warnung“ bzw. farbige Zeilen).', false);
+    }
+  });
+}
+
+async function onImport() {
+  const btn = getEl('btn-import');
+  if (!btn || !currentFilePath) return;
+
+  await withBusy(btn, 'Lädt…', async () => {
+    showValidationMessage('', false);
+    collectMappingFromDom();
+    const projectId = getProjectId();
+
+    const result = await window.bridge.importFile({
+      filePath: currentFilePath,
+      mapping: currentMapping,
+      projectId,
+    });
+
+    setSectionHidden('step-log', false);
+    renderImportLog(result);
+
+    if (!result.success) {
+      showValidationMessage('Import mit Fehlern beendet. Siehe Log.', true);
+    }
+  });
+}
+
+function onNewImport() {
+  resetWizard();
+}
+
+const btnSelect = getEl('btn-select-file');
+const btnValidate = getEl('btn-validate');
+const btnImport = getEl('btn-import');
+const btnNew = getEl('btn-new-import');
+if (btnSelect) btnSelect.addEventListener('click', onSelectFile);
+if (btnValidate) btnValidate.addEventListener('click', onValidate);
+if (btnImport) btnImport.addEventListener('click', onImport);
+if (btnNew) btnNew.addEventListener('click', onNewImport);

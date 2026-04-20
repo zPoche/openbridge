@@ -11,92 +11,187 @@ class Importer {
     this.dryRun = dryRun;
     this.registry = new IdRegistry();
     this.log = [];
+    this._currentProjectId = null;
+    this._dryRunSeq = 900000;
   }
 
   async run(workPackages, projectId) {
+    this.log = [];
+    this.registry = new IdRegistry();
+    this._currentProjectId = projectId != null && projectId !== '' ? String(projectId) : null;
+    this._dryRunSeq = 900000;
+
     const validator = new Validator();
     const validation = validator.validate(workPackages);
 
     if (!validation.valid) {
-      return { success: false, errors: validation.errors, warnings: validation.warnings, log: this.log };
+      return {
+        success: false,
+        errors: validation.errors,
+        warnings: validation.warnings,
+        log: this.log,
+      };
     }
 
-    // Pass 1: top-level (no parent)
-    const topLevel = workPackages.filter(wp => !wp.parent_local_id && !wp.openproject_id);
+    const topLevel = workPackages.filter((wp) => !wp.parent_local_id && !wp.openproject_id);
     await this._importPass(topLevel, projectId);
 
-    // Pass 2: children
-    const children = workPackages.filter(wp => wp.parent_local_id && !wp.openproject_id);
+    const children = workPackages.filter((wp) => wp.parent_local_id && !wp.openproject_id);
     await this._importPass(children, projectId);
 
-    // Pass 3: updates (openproject_id already set)
-    const updates = workPackages.filter(wp => wp.openproject_id);
+    const updates = workPackages.filter((wp) => wp.openproject_id);
     await this._updatePass(updates);
 
-    return { success: true, errors: [], warnings: validation.warnings, log: this.log };
+    const hadErrors = this.log.some((e) => e.action === 'ERROR');
+    return {
+      success: !hadErrors,
+      errors: hadErrors
+        ? [
+            {
+              ref: 'Import',
+              message:
+                'Mindestens ein Arbeitspaket wurde nicht erfolgreich verarbeitet. Details im Log.',
+            },
+          ]
+        : [],
+      warnings: validation.warnings,
+      log: this.log,
+    };
   }
 
   async _importPass(workPackages, projectId) {
     for (const wp of workPackages) {
       const parentId = this.registry.resolve(wp.parent_local_id);
+      let typeHref = null;
+      if (wp.type && this.client && !this.dryRun && projectId) {
+        try {
+          typeHref = await this.client.resolveTypeHref(String(projectId), wp.type);
+        } catch (err) {
+          this.log.push({
+            action: 'ERROR',
+            title: wp.title,
+            sourceRow: wp._sourceRow,
+            error: `Typ konnte nicht aufgelöst werden: ${err.message}`,
+          });
+          continue;
+        }
+      }
 
-      const payload = this._buildPayload(wp, projectId, parentId);
+      const payload = this._buildPayload(wp, projectId, parentId, typeHref);
 
       if (this.dryRun) {
-        this.log.push({ action: 'CREATE (dry-run)', title: wp.title, payload });
+        this._dryRunSeq += 1;
+        const syntheticId = this._dryRunSeq;
+        if (wp.local_id != null && String(wp.local_id).trim() !== '') {
+          this.registry.register(wp.local_id, syntheticId);
+        }
+        this.log.push({
+          action: 'CREATE (dry-run)',
+          title: wp.title,
+          id: syntheticId,
+          sourceRow: wp._sourceRow,
+          payload,
+        });
         continue;
       }
 
       try {
-        const created = await this.client.createWorkPackage(projectId, payload);
-        this.registry.register(wp.local_id, created.id);
-        this.log.push({ action: 'CREATED', title: wp.title, id: created.id });
+        const created = await this.client.createWorkPackage(String(projectId), payload);
+        if (wp.local_id != null && String(wp.local_id).trim() !== '') {
+          this.registry.register(wp.local_id, created.id);
+        }
+        this.log.push({
+          action: 'CREATED',
+          title: wp.title,
+          id: created.id,
+          sourceRow: wp._sourceRow,
+        });
       } catch (err) {
-        this.log.push({ action: 'ERROR', title: wp.title, error: err.message });
+        this.log.push({
+          action: 'ERROR',
+          title: wp.title,
+          sourceRow: wp._sourceRow,
+          error: err.message,
+        });
       }
     }
   }
 
   async _updatePass(workPackages) {
     for (const wp of workPackages) {
-      const payload = this._buildPayload(wp, null, null);
+      let typeHref = null;
+      if (wp.type && this.client && !this.dryRun && this._currentProjectId) {
+        try {
+          typeHref = await this.client.resolveTypeHref(this._currentProjectId, wp.type);
+        } catch (err) {
+          this.log.push({
+            action: 'ERROR',
+            title: wp.title,
+            id: wp.openproject_id,
+            sourceRow: wp._sourceRow,
+            error: `Typ konnte nicht aufgelöst werden: ${err.message}`,
+          });
+          continue;
+        }
+      }
+
+      const payload = this._buildPayload(wp, null, null, typeHref);
 
       if (this.dryRun) {
-        this.log.push({ action: 'UPDATE (dry-run)', title: wp.title, id: wp.openproject_id, payload });
+        this.log.push({
+          action: 'UPDATE (dry-run)',
+          title: wp.title,
+          id: wp.openproject_id,
+          sourceRow: wp._sourceRow,
+          payload,
+        });
         continue;
       }
 
       try {
         await this.client.updateWorkPackage(wp.openproject_id, payload);
-        this.log.push({ action: 'UPDATED', title: wp.title, id: wp.openproject_id });
+        this.log.push({
+          action: 'UPDATED',
+          title: wp.title,
+          id: wp.openproject_id,
+          sourceRow: wp._sourceRow,
+        });
       } catch (err) {
-        this.log.push({ action: 'ERROR', title: wp.title, error: err.message });
+        this.log.push({
+          action: 'ERROR',
+          title: wp.title,
+          id: wp.openproject_id,
+          sourceRow: wp._sourceRow,
+          error: err.message,
+        });
       }
     }
   }
 
-  _buildPayload(wp, projectId, parentId) {
+  _buildPayload(wp, _projectId, parentId, typeHref) {
     const payload = {
       subject: wp.title,
-      description: { raw: wp.description || '' },
+      description: { raw: wp.description != null ? String(wp.description) : '' },
     };
 
-    // Only send dates when available
     if (wp.start_date) payload.startDate = wp.start_date;
-    if (wp.end_date)   payload.dueDate   = wp.end_date;
+    if (wp.end_date) payload.dueDate = wp.end_date;
 
-    // Only send duration when NO start+end date
-    if (wp.duration && !wp.start_date && !wp.end_date) {
-      payload.duration = `P${wp.duration}D`; // ISO 8601 duration
+    const dur = wp.duration === null || wp.duration === undefined || wp.duration === ''
+      ? null
+      : Number(wp.duration);
+    if (dur !== null && Number.isFinite(dur) && dur > 0 && !wp.start_date && !wp.end_date) {
+      payload.duration = `P${dur}D`;
     }
 
-    if (parentId) {
-      payload._links = { parent: { href: `/api/v3/work_packages/${parentId}` } };
+    const links = {};
+    if (parentId != null && parentId !== '') {
+      links.parent = { href: `/api/v3/work_packages/${parentId}` };
     }
-
-    if (wp.type) {
-      payload._links = { ...payload._links, type: { href: `/api/v3/types/...` } }; // resolved by client
+    if (typeHref) {
+      links.type = { href: typeHref };
     }
+    if (Object.keys(links).length) payload._links = links;
 
     return payload;
   }

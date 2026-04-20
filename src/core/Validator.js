@@ -9,31 +9,43 @@ class Validator {
 
     workPackages.forEach((wp, index) => {
       const ref = wp.local_id || wp.title || `Row ${index + 1}`;
+      const rowLabel = wp._sourceRow != null ? wp._sourceRow : index + 1;
 
-      // Required: title
-      if (!wp.title) {
-        errors.push({ ref, message: 'Thema (title) is required' });
+      if (!wp.title || String(wp.title).trim() === '') {
+        errors.push({ ref, rowIndex: rowLabel, message: 'Thema (title) ist erforderlich' });
       }
 
-      // Date logic: start must be before end
       if (wp.start_date && wp.end_date) {
         if (new Date(wp.start_date) > new Date(wp.end_date)) {
-          errors.push({ ref, message: `Start date (${wp.start_date}) is after end date (${wp.end_date})` });
+          errors.push({
+            ref,
+            rowIndex: rowLabel,
+            message: `Startdatum (${wp.start_date}) liegt nach dem Enddatum (${wp.end_date})`,
+          });
         }
       }
 
-      // Duration conflict: duration + start + end = conflict
-      if (wp.duration && wp.start_date && wp.end_date) {
-        warnings.push({ ref, message: 'duration will be ignored because start and end date are both set' });
+      const dur = this._parseDuration(wp.duration);
+      if (dur !== null && wp.start_date && wp.end_date) {
+        warnings.push({
+          ref,
+          rowIndex: rowLabel,
+          message: 'Dauer wird ignoriert, da Start- und Enddatum gesetzt sind',
+        });
       }
 
-      // Duration must be > 0 if set
-      if (wp.duration !== null && wp.duration <= 0) {
-        errors.push({ ref, message: 'duration must be greater than 0' });
+      if (dur !== null && dur <= 0) {
+        errors.push({ ref, rowIndex: rowLabel, message: 'Dauer muss größer als 0 sein' });
       }
     });
 
     return { errors, warnings, valid: errors.length === 0 };
+  }
+
+  _parseDuration(duration) {
+    if (duration === null || duration === undefined || duration === '') return null;
+    const n = Number(duration);
+    return Number.isFinite(n) ? n : null;
   }
 }
 
