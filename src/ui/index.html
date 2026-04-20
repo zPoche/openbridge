@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>openbridge</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>🌉 openbridge</h1>
+      <p>Gantt-Pläne in OpenProject importieren</p>
+    </header>
+
+    <main>
+      <!-- Step 1: File Upload -->
+      <section id="step-upload">
+        <h2>1. Datei auswählen</h2>
+        <div id="drop-zone">
+          <p>Excel oder CSV hier reinziehen</p>
+          <button id="btn-select-file">Datei auswählen</button>
+        </div>
+        <p id="selected-file"></p>
+      </section>
+
+      <!-- Step 2: Column Mapping -->
+      <section id="step-mapping" class="hidden">
+        <h2>2. Spalten zuordnen</h2>
+        <div id="mapping-table"></div>
+        <button id="btn-validate">Validieren & Vorschau</button>
+      </section>
+
+      <!-- Step 3: Preview / Dry-Run -->
+      <section id="step-preview" class="hidden">
+        <h2>3. Vorschau</h2>
+        <div id="preview-summary"></div>
+        <div id="preview-table"></div>
+        <div id="validation-errors"></div>
+        <button id="btn-import" class="primary">Jetzt importieren</button>
+      </section>
+
+      <!-- Step 4: Import Log -->
+      <section id="step-log" class="hidden">
+        <h2>4. Import-Log</h2>
+        <div id="import-log"></div>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
