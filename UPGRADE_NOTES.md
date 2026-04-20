@@ -21,7 +21,8 @@
 
 - `npm run dev` und `npm run build` sind mit installiertem **Node.js inkl. npm auf dem PATH** geprüft (electron-builder 26 ruft intern `npm list` auf; ohne erreichbares `npm` kann die Modulsammlung fehlschlagen).
 - **Windows-Artefakte:** `electron-builder` schreibt nach **`release/`** (Installer `openbridge Setup <version>.exe`, dazu `win-unpacked/`). Ältere Hinweise auf nur `dist/` sind obsolet.
-- **CI:** Workflow `.github/workflows/release.yml` — `windows-latest`, `npm ci`, `npm run build`, Artifact-Upload; optionaler Release-Upload auskommentiert.
+- **CI:** Workflow `.github/workflows/release.yml` — `windows-latest`, `npm ci`, `npm run build`, Artifact-Upload. **Push auf `main`** oder **workflow_dispatch:** nur Build + Artifact. **Tag `v*`** (z. B. `v1.0.0`): zusätzlich **GitHub Release** mit `release/openbridge Setup *.exe` (`softprops/action-gh-release`, `CSC_IDENTITY_AUTO_DISCOVERY=false`, `GITHUB_TOKEN`).
+- **Release auslösen:** lokalen Stand committen, dann `git tag v1.0.0` und `git push origin v1.0.0` (Version anpassen). Der Workflow erzeugt Release-Titel `openbridge v1.0.0` (aus Tag-Namen).
 - **`package.json`:** u. a. `author` gesetzt (Hinweis von electron-builder), `artifactName`, explizites **`directories.output`: `release`**.
 
 ## Bekannte Restpunkte

@@ -1,11 +1,21 @@
-# Windows NSIS build (Release Candidate / tagged releases).
-# Kein Auto-Updater, kein Publishing bei jedem Push — nur manuell oder per Git-Tag.
+# Windows NSIS-Build und optional GitHub Release.
+#
+# Trigger:
+# - Push auf branch `main` → nur Build + Artifact-Upload
+# - Git-Tag `v*` (z. B. v1.0.0) pushen → Build + Artifact + GitHub Release mit Installer
+# - workflow_dispatch → nur Build + Artifact
+#
+# Release manuell auslösen:
+#   git tag v1.0.0
+#   git push origin v1.0.0
 
 name: Windows build
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -15,6 +25,8 @@ jobs:
     env:
       # Kein Code-Signing-Zertifikat im Repo — verhindert hängende Signatur-Suche in CI.
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,14 +51,15 @@ jobs:
             release/*.exe
             release/*.blockmap
 
-      # Optional: GitHub Release mit Installer befüllen (benötigt Schreibrecht auf Releases).
-      # Nach ersten erfolgreichen Builds auskommentieren und testen.
-      # - name: Publish GitHub Release
-      #   if: startsWith(github.ref, 'refs/tags/v')
-      #   uses: softprops/action-gh-release@v2
-      #   with:
-      #     files: |
-      #       release/*.exe
-      #       release/*.blockmap
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: openbridge ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            release/openbridge Setup *.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
