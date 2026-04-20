@@ -106,15 +106,11 @@ For local development you can still use a `.env` file if you wire it elsewhere, 
 
 ## Security / Abhängigkeiten
 
-Ein `npm audit` kann (Stand heute, je nach Lockfile) unter anderem folgende Punkte melden, die hier **bewusst noch nicht** automatisch behoben werden:
+**Stand Upgrade (siehe `UPGRADE_NOTES.md`):** `electron` ist auf **41.2.1** und `electron-builder` auf **26.8.1** angehoben; der Renderer bleibt mit `contextIsolation: true`, `nodeIntegration: false` und schmalem `contextBridge`-API (`preload.js`) abgeschottet.
 
-- **Electron** unter Version 41.x wird mit diversen Sicherheitsmeldungen geführt (u. a. ASAR-Integrity-Bypass, AppleScript-Injection und weitere Themen). Mitigation ist typischerweise ein Upgrade auf eine aktuelle Electron-Version (z. B. Richtung `electron@41.2.1` oder neuer), geprüft gegen Breaking Changes.
-- **electron-builder** und transitive Abhängigkeiten wie **tar** können Path-Traversal- bzw. Hardlink-Probleme melden; Abhilfe ist in der Regel ein Upgrade der betroffenen Pakete auf gepatchte Releases.
-- **xlsx (SheetJS)** wird in Advisories mit Themen wie **Prototype Pollution** und **ReDoS** geführt. Für das öffentliche npm-Paket werden häufig nur kommerzielle Builds als vollständig gepatcht beschrieben; ein Wechsel des Parsers oder ein CSV-only-Workflow ist eine mögliche langfristige Strategie.
+Ein `npm audit` kann weiterhin insbesondere **xlsx (SheetJS)** melden (**Prototype Pollution**, **ReDoS**). Für das öffentliche npm-Paket `xlsx` gibt es häufig **keinen regulären npm-Fix**; das Advisory bleibt damit ein **bekanntes Restrisiko**, solange SheetJS im Projekt bleibt. Langfristige Optionen wären z. B. ein anderer Parser oder ein reduzierter Import-Pfad (z. B. nur CSV).
 
 openbridge wird derzeit als **internes Tool** eingesetzt, das **nur vertrauenswürdige Dateien** importiert. Damit ist das praktische Risiko aus den genannten Themen deutlich geringer als bei einer breit verteilten Consumer-App.
-
-**Geplante Härtung für echte Releases:** In einem separaten Branch sollten Electron und electron-builder (inkl. tar) auf aktuelle, geprüfte Versionen angehoben und langfristig eine Alternative zu SheetJS oder ein reduzierter Import-Pfad (z. B. nur CSV) evaluiert werden.
 
 Relevante Advisory-/Dokumentationslinks:
 
